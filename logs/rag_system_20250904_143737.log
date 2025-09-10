@@ -1,0 +1,163 @@
+2025-09-04 14:37:37 | INFO | 🚀 开始运行完整的RAG系统流程...
+2025-09-04 14:37:37 | INFO | 🔍 检查运行环境...
+2025-09-04 14:37:37 | INFO | ✅ Python版本: 3.12
+2025-09-04 14:37:39 | INFO | ✅ torch 已安装
+2025-09-04 14:37:40 | INFO | ✅ transformers 已安装
+2025-09-04 14:37:42 | INFO | ✅ sentence_transformers 已安装
+2025-09-04 14:37:43 | INFO | ✅ qdrant_client 已安装
+2025-09-04 14:37:43 | INFO | ✅ streamlit 已安装
+2025-09-04 14:37:43 | INFO | ✅ pymupdf4llm 已安装
+2025-09-04 14:37:43 | INFO | ✅ Qdrant服务连接正常
+2025-09-04 14:37:43 | INFO | ⚙️ 开始数据处理...
+2025-09-04 14:37:44 | INFO | 📄 加载到 135 个文档
+2025-09-04 14:37:44 | INFO | Loading multilingual embedding model: BAAI/bge-m3 on device: cuda
+2025-09-04 14:39:12 | SUCCESS | Embedder ready. Vector dimension: 1024
+2025-09-04 14:39:12 | INFO | Starting to process 135 documents...
+2025-09-04 14:39:12 | INFO | Document arxiv_2509.03518v1 split into 54 chunks.
+2025-09-04 14:39:12 | INFO | Document arxiv_2509.03515v1 split into 50 chunks.
+2025-09-04 14:39:12 | INFO | Document arxiv_2509.03505v1 split into 54 chunks.
+2025-09-04 14:39:12 | INFO | Document arxiv_2509.03503v1 split into 67 chunks.
+2025-09-04 14:39:12 | INFO | Document arxiv_2509.03501v1 split into 43 chunks.
+2025-09-04 14:39:12 | INFO | Document arxiv_2509.03500v1 split into 67 chunks.
+2025-09-04 14:39:12 | INFO | Document arxiv_2509.03497v1 split into 62 chunks.
+2025-09-04 14:39:12 | INFO | Document arxiv_2509.03495v1 split into 80 chunks.
+2025-09-04 14:39:12 | INFO | Document arxiv_2509.03493v1 split into 60 chunks.
+2025-09-04 14:39:12 | INFO | Document arxiv_2509.03487v1 split into 51 chunks.
+2025-09-04 14:39:12 | INFO | Document arxiv_2509.03479v1 split into 56 chunks.
+2025-09-04 14:39:12 | INFO | Document arxiv_2509.03477v1 split into 81 chunks.
+2025-09-04 14:39:12 | INFO | Document arxiv_2509.03475v1 split into 66 chunks.
+2025-09-04 14:39:12 | INFO | Document arxiv_2509.03474v1 split into 41 chunks.
+2025-09-04 14:39:12 | INFO | Document arxiv_2509.03472v1 split into 52 chunks.
+2025-09-04 14:39:12 | INFO | Document arxiv_2509.03467v1 split into 60 chunks.
+2025-09-04 14:39:12 | INFO | Document arxiv_2509.03462v1 split into 61 chunks.
+2025-09-04 14:39:12 | INFO | Document arxiv_2509.03456v1 split into 86 chunks.
+2025-09-04 14:39:12 | INFO | Document arxiv_2509.03446v1 split into 64 chunks.
+2025-09-04 14:39:12 | INFO | Document arxiv_2509.03438v1 split into 62 chunks.
+2025-09-04 14:39:12 | INFO | Document arxiv_2509.03425v1 split into 52 chunks.
+2025-09-04 14:39:12 | INFO | Document arxiv_2509.03419v1 split into 49 chunks.
+2025-09-04 14:39:12 | INFO | Document arxiv_2509.03417v1 split into 60 chunks.
+2025-09-04 14:39:12 | INFO | Document arxiv_2509.03409v1 split into 80 chunks.
+2025-09-04 14:39:12 | INFO | Document arxiv_2509.03408v1 split into 47 chunks.
+2025-09-04 14:39:12 | INFO | Document arxiv_2509.03407v1 split into 21 chunks.
+2025-09-04 14:39:12 | INFO | Document arxiv_2509.03405v1 split into 69 chunks.
+2025-09-04 14:39:12 | INFO | Document arxiv_2509.03403v1 split into 49 chunks.
+2025-09-04 14:39:12 | INFO | Document arxiv_2509.03394v1 split into 60 chunks.
+2025-09-04 14:39:12 | INFO | Document arxiv_2509.03393v1 split into 52 chunks.
+2025-09-04 14:39:12 | INFO | Document arxiv_2509.03383v1 split into 78 chunks.
+2025-09-04 14:39:12 | INFO | Document arxiv_2509.03380v1 split into 70 chunks.
+2025-09-04 14:39:12 | INFO | Document arxiv_2509.03379v1 split into 62 chunks.
+2025-09-04 14:39:12 | INFO | Document arxiv_2509.03378v1 split into 72 chunks.
+2025-09-04 14:39:12 | INFO | Document arxiv_2509.03365v1 split into 44 chunks.
+2025-09-04 14:39:12 | INFO | Document arxiv_2509.03358v1 split into 39 chunks.
+2025-09-04 14:39:12 | INFO | Document arxiv_2509.03351v1 split into 58 chunks.
+2025-09-04 14:39:12 | INFO | Document arxiv_2509.03348v1 split into 68 chunks.
+2025-09-04 14:39:12 | INFO | Document arxiv_2509.03345v1 split into 51 chunks.
+2025-09-04 14:39:12 | INFO | Document arxiv_2509.03341v1 split into 83 chunks.
+2025-09-04 14:39:12 | INFO | Document arxiv_2509.03340v1 split into 42 chunks.
+2025-09-04 14:39:12 | INFO | Document arxiv_2509.03335v1 split into 66 chunks.
+2025-09-04 14:39:12 | INFO | Document arxiv_2509.03329v1 split into 77 chunks.
+2025-09-04 14:39:12 | INFO | Document arxiv_2509.03323v1 split into 40 chunks.
+2025-09-04 14:39:12 | INFO | Document arxiv_2509.03319v1 split into 46 chunks.
+2025-09-04 14:39:12 | INFO | Document arxiv_2509.03317v1 split into 22 chunks.
+2025-09-04 14:39:12 | INFO | Document arxiv_2509.03316v1 split into 74 chunks.
+2025-09-04 14:39:12 | INFO | Document arxiv_2509.03312v1 split into 62 chunks.
+2025-09-04 14:39:12 | INFO | Document arxiv_2509.03310v1 split into 39 chunks.
+2025-09-04 14:39:12 | INFO | Document arxiv_2509.03303v1 split into 50 chunks.
+2025-09-04 14:39:12 | INFO | Document arxiv_2509.03300v1 split into 44 chunks.
+2025-09-04 14:39:12 | INFO | Document arxiv_2509.03294v1 split into 45 chunks.
+2025-09-04 14:39:12 | INFO | Document arxiv_2509.03292v1 split into 50 chunks.
+2025-09-04 14:39:12 | INFO | Document arxiv_2509.03290v1 split into 68 chunks.
+2025-09-04 14:39:12 | INFO | Document arxiv_2509.03286v1 split into 72 chunks.
+2025-09-04 14:39:12 | INFO | Document arxiv_2509.03263v1 split into 66 chunks.
+2025-09-04 14:39:12 | INFO | Document arxiv_2509.03260v1 split into 83 chunks.
+2025-09-04 14:39:12 | INFO | Document arxiv_2509.03256v1 split into 64 chunks.
+2025-09-04 14:39:12 | INFO | Document arxiv_2509.03249v1 split into 52 chunks.
+2025-09-04 14:39:12 | INFO | Document arxiv_2509.03244v1 split into 87 chunks.
+2025-09-04 14:39:12 | INFO | Document arxiv_2509.03242v1 split into 65 chunks.
+2025-09-04 14:39:12 | INFO | Document arxiv_2509.03241v1 split into 67 chunks.
+2025-09-04 14:39:12 | INFO | Document arxiv_2509.03240v1 split into 53 chunks.
+2025-09-04 14:39:12 | INFO | Document arxiv_2509.03234v1 split into 85 chunks.
+2025-09-04 14:39:12 | INFO | Document arxiv_2509.03228v1 split into 102 chunks.
+2025-09-04 14:39:12 | INFO | Document arxiv_2509.03222v1 split into 80 chunks.
+2025-09-04 14:39:12 | INFO | Document arxiv_2509.03221v1 split into 34 chunks.
+2025-09-04 14:39:12 | INFO | Document arxiv_2509.03219v1 split into 64 chunks.
+2025-09-04 14:39:12 | INFO | Document arxiv_2509.03206v1 split into 62 chunks.
+2025-09-04 14:39:12 | INFO | Document arxiv_2509.03204v1 split into 40 chunks.
+2025-09-04 14:39:12 | INFO | Document arxiv_2509.03191v1 split into 70 chunks.
+2025-09-04 14:39:12 | INFO | Document arxiv_2509.03187v1 split into 72 chunks.
+2025-09-04 14:39:12 | INFO | Document arxiv_2509.03181v1 split into 81 chunks.
+2025-09-04 14:39:12 | INFO | Document arxiv_2509.03179v1 split into 64 chunks.
+2025-09-04 14:39:12 | INFO | Document arxiv_2509.03176v1 split into 49 chunks.
+2025-09-04 14:39:12 | INFO | Document arxiv_2509.03173v1 split into 80 chunks.
+2025-09-04 14:39:12 | INFO | Document arxiv_2509.03170v1 split into 26 chunks.
+2025-09-04 14:39:12 | INFO | Document arxiv_2509.03169v1 split into 78 chunks.
+2025-09-04 14:39:12 | INFO | Document arxiv_2509.03162v1 split into 70 chunks.
+2025-09-04 14:39:12 | INFO | Document arxiv_2509.03161v1 split into 42 chunks.
+2025-09-04 14:39:12 | INFO | Document arxiv_2509.03148v1 split into 51 chunks.
+2025-09-04 14:39:12 | INFO | Document arxiv_2509.03143v1 split into 28 chunks.
+2025-09-04 14:39:12 | INFO | Document arxiv_2509.03141v1 split into 31 chunks.
+2025-09-04 14:39:12 | INFO | Document arxiv_2509.03140v1 split into 65 chunks.
+2025-09-04 14:39:12 | INFO | Document arxiv_2509.03137v1 split into 41 chunks.
+2025-09-04 14:39:12 | INFO | Document arxiv_2509.03136v1 split into 56 chunks.
+2025-09-04 14:39:12 | INFO | Document arxiv_2509.03131v1 split into 63 chunks.
+2025-09-04 14:39:12 | INFO | Document arxiv_2509.03122v1 split into 68 chunks.
+2025-09-04 14:39:12 | INFO | Document arxiv_2509.03118v1 split into 70 chunks.
+2025-09-04 14:39:12 | INFO | Document arxiv_2509.03116v1 split into 57 chunks.
+2025-09-04 14:39:12 | INFO | Document arxiv_2509.03113v1 split into 58 chunks.
+2025-09-04 14:39:12 | INFO | Document arxiv_2509.03112v1 split into 39 chunks.
+2025-09-04 14:39:12 | INFO | Document arxiv_2509.03110v1 split into 68 chunks.
+2025-09-04 14:39:12 | INFO | Document arxiv_2509.03095v1 split into 30 chunks.
+2025-09-04 14:39:12 | INFO | Document arxiv_2509.03093v1 split into 79 chunks.
+2025-09-04 14:39:12 | INFO | Document arxiv_2509.03084v1 split into 39 chunks.
+2025-09-04 14:39:12 | INFO | Document arxiv_2509.03066v1 split into 60 chunks.
+2025-09-04 14:39:12 | INFO | Document arxiv_2509.03060v1 split into 38 chunks.
+2025-09-04 14:39:12 | INFO | Document arxiv_2509.03059v1 split into 29 chunks.
+2025-09-04 14:39:12 | INFO | Document arxiv_2509.03057v1 split into 78 chunks.
+2025-09-04 14:39:12 | INFO | Document hf_2508.01408 split into 1 chunks.
+2025-09-04 14:39:12 | INFO | Document hf_2303.12712 split into 1 chunks.
+2025-09-04 14:39:12 | INFO | Document hf_2502.03487 split into 1 chunks.
+2025-09-04 14:39:12 | INFO | Document hf_2402.03316 split into 1 chunks.
+2025-09-04 14:39:12 | INFO | Document hf_2303.10158 split into 1 chunks.
+2025-09-04 14:39:12 | INFO | Document hf_2103.11241 split into 1 chunks.
+2025-09-04 14:39:12 | INFO | Document hf_2007.04068 split into 1 chunks.
+2025-09-04 14:39:12 | INFO | Document hf_2502.12990 split into 1 chunks.
+2025-09-04 14:39:12 | INFO | Document hf_2502.05244 split into 1 chunks.
+2025-09-04 14:39:12 | INFO | Document hf_2412.17866 split into 1 chunks.
+2025-09-04 14:39:12 | INFO | Document hf_2501.10374 split into 1 chunks.
+2025-09-04 14:39:12 | INFO | Document hf_2411.19855 split into 1 chunks.
+2025-09-04 14:39:12 | INFO | Document hf_2112.08441 split into 1 chunks.
+2025-09-04 14:39:12 | INFO | Document hf_1903.04369 split into 1 chunks.
+2025-09-04 14:39:12 | INFO | Document hf_2409.16001 split into 1 chunks.
+2025-09-04 14:39:12 | INFO | Document hf_2405.02336 split into 1 chunks.
+2025-09-04 14:39:12 | INFO | Document hf_2405.00711 split into 1 chunks.
+2025-09-04 14:39:12 | INFO | Document hf_2507.04528 split into 1 chunks.
+2025-09-04 14:39:12 | INFO | Document hf_2505.12335 split into 1 chunks.
+2025-09-04 14:39:12 | INFO | Document hf_2501.03151 split into 1 chunks.
+2025-09-04 14:39:12 | INFO | Document blog_googleai_tag:blogger.com,1999:blog-8474926331452026626.post-1569605132526995799 split into 69 chunks.
+2025-09-04 14:39:12 | INFO | Document blog_googleai_tag:blogger.com,1999:blog-8474926331452026626.post-1799535679952845079 split into 79 chunks.
+2025-09-04 14:39:12 | INFO | Document blog_googleai_tag:blogger.com,1999:blog-8474926331452026626.post-7061041222399769838 split into 66 chunks.
+2025-09-04 14:39:12 | INFO | Document blog_googleai_tag:blogger.com,1999:blog-8474926331452026626.post-4615278636568583418 split into 82 chunks.
+2025-09-04 14:39:12 | INFO | Document blog_googleai_tag:blogger.com,1999:blog-8474926331452026626.post-520087429457973735 split into 70 chunks.
+2025-09-04 14:39:12 | INFO | Document blog_bair_http://bair.berkeley.edu/blog/2025/04/11/prompt-injection-defense/ split into 29 chunks.
+2025-09-04 14:39:12 | INFO | Document blog_bair_http://bair.berkeley.edu/blog/2025/04/08/plaid/ split into 37 chunks.
+2025-09-04 14:39:12 | INFO | Document blog_bair_http://bair.berkeley.edu/blog/2025/03/25/rl-av-smoothing/ split into 53 chunks.
+2025-09-04 14:39:12 | INFO | Document blog_bair_http://bair.berkeley.edu/blog/2024/11/12/virutal-persona-llm/ split into 29 chunks.
+2025-09-04 14:39:12 | INFO | Document blog_bair_http://bair.berkeley.edu/blog/2024/09/20/linguistic-bias/ split into 20 chunks.
+2025-09-04 14:39:12 | INFO | Document blog_deepmind_https://deepmind.google/discover/blog/image-editing-in-gemini-just-got-a-major-upgrade/ split into 1 chunks.
+2025-09-04 14:39:12 | INFO | Document blog_deepmind_https://deepmind.google/discover/blog/introducing-gemma-3-270m-the-compact-model-for-hyper-efficient-ai/ split into 1 chunks.
+2025-09-04 14:39:12 | INFO | Document blog_deepmind_https://deepmind.google/discover/blog/how-ai-is-helping-advance-the-science-of-bioacoustics-to-save-endangered-species/ split into 1 chunks.
+2025-09-04 14:39:12 | INFO | Document blog_deepmind_https://deepmind.google/discover/blog/genie-3-a-new-frontier-for-world-models/ split into 1 chunks.
+2025-09-04 14:39:12 | INFO | Document blog_deepmind_https://deepmind.google/discover/blog/rethinking-how-we-measure-ai-intelligence/ split into 1 chunks.
+2025-09-04 14:39:12 | INFO | Starting to embed 6421 text chunks...
+2025-09-04 14:40:02 | SUCCESS | Document processing complete. Generated 6421 vectorized chunks.
+2025-09-04 14:40:13 | INFO | Processed data saved to: /autodl-fs/data/rag_zh/data/processed/processed_chunks.json
+2025-09-04 14:40:13 | INFO | ✅ 数据处理完成: 6421 个文本块已保存至 /autodl-fs/data/rag_zh/data/processed/processed_chunks.json
+2025-09-04 14:40:13 | INFO | 🗄️ 开始构建向量知识库...
+2025-09-04 14:40:13 | INFO | Successfully connected to Qdrant at localhost:6333
+2025-09-04 14:40:15 | INFO | Collection 'ai_papers' created.
+2025-09-04 14:40:18 | INFO | Created full-text index on 'content' field.
+2025-09-04 14:40:18 | INFO | Building knowledge base from /autodl-fs/data/rag_zh/data/processed/processed_chunks.json...
+2025-09-04 14:40:26 | INFO | Adding 6421 vectors to the database...
+2025-09-04 14:40:31 | ERROR | Failed to build knowledge base: timed out
+2025-09-04 14:40:31 | ERROR | ❌ 知识库构建失败
+2025-09-04 14:40:31 | ERROR | ❌ 知识库构建失败
