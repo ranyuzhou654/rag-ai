@@ -62,8 +62,8 @@ Qdrant >= 1.7.0 (向量数据库)
 
 1. **克隆仓库**
 ```bash
-git clone <repository-url>
-cd rag_zh_new
+git clone https://github.com/ranyuzhou654/rag-ai.git
+cd rag-ai
 ```
 
 2. **环境配置**
@@ -83,7 +83,7 @@ pip install -r requirements.txt
 python setup.py
 
 # 启动Qdrant向量数据库
-./qdrant --storage-path ./storage
+./qdrant
 ```
 
 4. **系统初始化**
