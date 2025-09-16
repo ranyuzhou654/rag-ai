@@ -4,11 +4,11 @@ import re
 import asyncio
 from dataclasses import dataclass
 import numpy as np
-from sentence_transformers import SentenceTransformer
-import torch
-from transformers import AutoTokenizer, AutoModelForCausalLM, GenerationConfig
+from transformers import GenerationConfig
 from loguru import logger
 from sklearn.metrics.pairwise import cosine_similarity
+
+from src.optimization.model_registry import ModelRegistry
 
 @dataclass
 class CompressedContext:
@@ -21,11 +21,12 @@ class CompressedContext:
 
 class SentenceExtractor:
     """句子提取器 - 从文档块中提取最相关的句子"""
-    
+
     def __init__(self, embedding_model: str = "BAAI/bge-m3", device: str = "auto"):
-        self.device = "cuda" if torch.cuda.is_available() else "cpu"
-        self.embedder = SentenceTransformer(embedding_model, device=self.device)
-        logger.info(f"Sentence Extractor initialized with {embedding_model}")
+        self.embedder = ModelRegistry.get_sentence_transformer(
+            embedding_model, device=device
+        )
+        logger.info(f"Sentence Extractor initialized with shared {embedding_model}")
     
     def extract_relevant_sentences(
         self, 
@@ -104,23 +105,16 @@ class SentenceExtractor:
 
 class LLMCompressor:
     """基于LLM的内容压缩器"""
-    
+
     def __init__(self, model_name: str, device: str = "auto", token: Optional[str] = None):
-        self.device = "cuda" if torch.cuda.is_available() else "cpu"
+        resource = ModelRegistry.get_llm(model_name, device=device, token=token)
+        self.device = resource.device
         self.model_name = model_name
-        
-        logger.info(f"Loading LLM Compressor: {model_name}")
-        self.tokenizer = AutoTokenizer.from_pretrained(
-            model_name, trust_remote_code=True, token=token
-        )
-        self.model = AutoModelForCausalLM.from_pretrained(
-            model_name,
-            torch_dtype="auto",
-            device_map="auto",
-            trust_remote_code=True,
-            token=token
-        )
-        
+
+        logger.info(f"Loading LLM Compressor via shared registry: {model_name}")
+        self.tokenizer = resource.tokenizer
+        self.model = resource.model
+
         self.generation_config = GenerationConfig(
             max_new_tokens=512,
             temperature=0.2,
@@ -315,13 +309,13 @@ class SmartReranker:
     
     def __init__(self, config: Dict):
         self.config = config
-        
+
         # Initialize embedder for semantic similarity
-        self.embedder = SentenceTransformer(
+        self.embedder = ModelRegistry.get_sentence_transformer(
             config.get('embedding_model', 'BAAI/bge-m3'),
             device=config.get('device', 'auto')
         )
-        
+
         logger.info("Smart Reranker initialized")
     
     def smart_rerank(

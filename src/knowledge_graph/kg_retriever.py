@@ -6,9 +6,9 @@ from dataclasses import dataclass
 from pathlib import Path
 from loguru import logger
 import numpy as np
-from sentence_transformers import SentenceTransformer
 from sklearn.metrics.pairwise import cosine_similarity
 from .knowledge_extractor import KnowledgeGraphIndexer
+from src.optimization.model_registry import ModelRegistry
 
 @dataclass
 class KGRetrievalResult:
@@ -28,9 +28,9 @@ class KnowledgeGraphRetriever:
         
         # 初始化知识图谱索引器
         self.kg_indexer = KnowledgeGraphIndexer(config)
-        
+
         # 初始化embedding模型用于语义相似度计算
-        self.embedder = SentenceTransformer(
+        self.embedder = ModelRegistry.get_sentence_transformer(
             config.get('embedding_model', 'BAAI/bge-m3'),
             device=config.get('device', 'auto')
         )

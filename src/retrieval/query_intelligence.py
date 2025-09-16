@@ -4,10 +4,11 @@ import asyncio
 import re
 from dataclasses import dataclass
 from loguru import logger
-import torch
-from transformers import AutoTokenizer, AutoModelForCausalLM, GenerationConfig
+from transformers import GenerationConfig
 import json
 from pathlib import Path
+
+from src.optimization.model_registry import ModelRegistry
 
 @dataclass
 class QueryAnalysisResult:
@@ -22,7 +23,7 @@ class QueryAnalysisResult:
 
 class QueryComplexityAnalyzer:
     """查询复杂度分析器"""
-    
+
     def __init__(self):
         self.complexity_indicators = {
             'simple': [
@@ -65,25 +66,29 @@ class QueryComplexityAnalyzer:
         else:
             return 'simple'
 
-class SubQuestionGenerator:
-    """子问题生成器"""
-    
-    def __init__(self, model_name: str, device: str = "auto", token: Optional[str] = None):
-        self.device = "cuda" if torch.cuda.is_available() else "cpu"
+
+class _SharedLLMComponent:
+    """Utility mixin that reuses cached LLM instances via the registry."""
+
+    def __init__(self, model_name: str, device: str = "auto", token: Optional[str] = None, component_name: str = "LLM component"):
         self.model_name = model_name
-        
-        logger.info(f"Loading SubQuestion Generator: {model_name}")
-        self.tokenizer = AutoTokenizer.from_pretrained(
-            model_name, trust_remote_code=True, token=token
+        resource = ModelRegistry.get_llm(model_name, device=device, token=token)
+        self.tokenizer = resource.tokenizer
+        self.model = resource.model
+        self.device = resource.device
+        logger.info(f"{component_name} using shared LLM: {model_name}")
+
+class SubQuestionGenerator(_SharedLLMComponent):
+    """子问题生成器"""
+
+    def __init__(self, model_name: str, device: str = "auto", token: Optional[str] = None):
+        super().__init__(
+            model_name=model_name,
+            device=device,
+            token=token,
+            component_name="SubQuestion Generator"
         )
-        self.model = AutoModelForCausalLM.from_pretrained(
-            model_name,
-            torch_dtype="auto",
-            device_map="auto", 
-            trust_remote_code=True,
-            token=token
-        )
-        
+
         self.generation_config = GenerationConfig(
             max_new_tokens=512,
             temperature=0.3,
@@ -144,25 +149,17 @@ Sub-questions:
             logger.error(f"Failed to generate sub-questions: {e}")
             return []
 
-class QueryRewriter:
+class QueryRewriter(_SharedLLMComponent):
     """查询重写器 - 优化检索效果"""
-    
+
     def __init__(self, model_name: str, device: str = "auto", token: Optional[str] = None):
-        self.device = "cuda" if torch.cuda.is_available() else "cpu"
-        self.model_name = model_name
-        
-        logger.info(f"Loading Query Rewriter: {model_name}")
-        self.tokenizer = AutoTokenizer.from_pretrained(
-            model_name, trust_remote_code=True, token=token
+        super().__init__(
+            model_name=model_name,
+            device=device,
+            token=token,
+            component_name="Query Rewriter"
         )
-        self.model = AutoModelForCausalLM.from_pretrained(
-            model_name,
-            torch_dtype="auto", 
-            device_map="auto",
-            trust_remote_code=True,
-            token=token
-        )
-        
+
         self.generation_config = GenerationConfig(
             max_new_tokens=256,
             temperature=0.2,
@@ -225,25 +222,17 @@ Rewritten versions:
             logger.error(f"Failed to rewrite query: {e}")
             return [query]
 
-class HyDEGenerator:
+class HyDEGenerator(_SharedLLMComponent):
     """假设性文档嵌入生成器 (Hypothetical Document Embeddings)"""
-    
+
     def __init__(self, model_name: str, device: str = "auto", token: Optional[str] = None):
-        self.device = "cuda" if torch.cuda.is_available() else "cpu" 
-        self.model_name = model_name
-        
-        logger.info(f"Loading HyDE Generator: {model_name}")
-        self.tokenizer = AutoTokenizer.from_pretrained(
-            model_name, trust_remote_code=True, token=token
+        super().__init__(
+            model_name=model_name,
+            device=device,
+            token=token,
+            component_name="HyDE Generator"
         )
-        self.model = AutoModelForCausalLM.from_pretrained(
-            model_name,
-            torch_dtype="auto",
-            device_map="auto",
-            trust_remote_code=True, 
-            token=token
-        )
-        
+
         self.generation_config = GenerationConfig(
             max_new_tokens=512,
             temperature=0.7,
