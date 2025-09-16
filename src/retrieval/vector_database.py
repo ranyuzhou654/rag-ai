@@ -160,10 +160,29 @@ class QdrantVectorDB:
     def _tokenize_for_search(self, text: str) -> List[str]:
         """为全文检索准备token"""
         import re
-        
-        # 简单的分词（可以替换为更专业的分词器）
-        tokens = re.findall(r'\b\w{3,}\b', text.lower())
-        return list(set(tokens))  # 去重
+
+        # 英文和数字分词
+        tokens = re.findall(r'\b[a-z0-9]{2,}\b', text.lower())
+
+        # 简单的中文分词，通过生成1-3字的滑动窗口
+        chinese_segments = re.findall(r'[\u4e00-\u9fa5]+', text)
+        for segment in chinese_segments:
+            tokens.extend(self._generate_chinese_tokens(segment))
+
+        return list({token for token in tokens if token})  # 去重
+
+    def _generate_chinese_tokens(self, segment: str) -> List[str]:
+        if not segment:
+            return []
+
+        tokens = set()
+        length = len(segment)
+
+        for size in (1, 2, 3):
+            for i in range(length - size + 1):
+                tokens.add(segment[i:i + size])
+
+        return list(tokens)
     
     def hybrid_search(
         self,
@@ -294,10 +313,10 @@ class VectorDatabaseManager:
             timeout=config.get('qdrant_timeout', 120) # 从配置读取或默认120秒
         )
     
-    def build_knowledge_base(self, processed_chunks_path: Path) -> bool:
+    def build_knowledge_base(self, processed_chunks_path: Path, chunks: Optional[List[Dict]] = None) -> bool:
         """
         从处理好的文本块构建知识库
-        
+
         Args:
             processed_chunks_path: 处理后的文本块JSON文件路径
             
@@ -308,8 +327,9 @@ class VectorDatabaseManager:
         
         try:
             # 加载处理后的数据
-            with open(processed_chunks_path, 'r', encoding='utf-8') as f:
-                chunks = json.load(f)
+            if chunks is None:
+                with open(processed_chunks_path, 'r', encoding='utf-8') as f:
+                    chunks = json.load(f)
             
             logger.info(f"加载到 {len(chunks)} 个文本块")
             
