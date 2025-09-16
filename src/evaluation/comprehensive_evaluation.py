@@ -6,7 +6,7 @@
 """
 
 from typing import Dict, List, Optional, Any, Tuple
-from dataclasses import dataclass, asdict
+from dataclasses import dataclass, asdict, field
 import asyncio
 import time
 import json
@@ -66,10 +66,11 @@ class EvaluationMetrics:
     response_latency: Optional[float] = None
     cost_efficiency: Optional[float] = None
     user_satisfaction: Optional[float] = None
-    
+
     # 综合指标
     overall_score: Optional[float] = None
     evaluation_timestamp: str = None
+    notes: List[str] = field(default_factory=list)
     
     def __post_init__(self):
         if self.evaluation_timestamp is None:
@@ -100,13 +101,14 @@ class EvaluationReport:
 
 class RAGASEvaluator:
     """RAGAS评估器"""
-    
+
     def __init__(self, llm_model=None):
+        self.llm_model = llm_model
+        self.using_mock = not RAGAS_AVAILABLE
         if not RAGAS_AVAILABLE:
             logger.warning("RAGAS not available, creating mock evaluator")
             return
-        
-        self.llm_model = llm_model
+
         self.metrics = [
             faithfulness,
             answer_relevancy,
@@ -120,8 +122,9 @@ class RAGASEvaluator:
     async def evaluate_batch(self, evaluation_cases: List[EvaluationCase]) -> Dict[str, float]:
         """批量评估"""
         if not RAGAS_AVAILABLE:
+            self.using_mock = True
             return self._mock_ragas_evaluation()
-        
+
         try:
             # 准备数据集
             dataset = self._prepare_ragas_dataset(evaluation_cases)
@@ -132,11 +135,13 @@ class RAGASEvaluator:
                 metrics=self.metrics,
                 llm=self.llm_model
             )
-            
+
+            self.using_mock = False
+
             # 提取分数
             return {
                 'faithfulness': results['faithfulness'],
-                'answer_relevancy': results['answer_relevancy'], 
+                'answer_relevancy': results['answer_relevancy'],
                 'context_precision': results['context_precision'],
                 'context_recall': results['context_recall'],
                 'answer_correctness': results['answer_correctness'],
@@ -145,8 +150,9 @@ class RAGASEvaluator:
             
         except Exception as e:
             logger.error(f"RAGAS evaluation failed: {e}")
+            self.using_mock = True
             return self._mock_ragas_evaluation()
-    
+
     def _prepare_ragas_dataset(self, evaluation_cases: List[EvaluationCase]) -> Dataset:
         """准备RAGAS数据集"""
         data = {
@@ -172,12 +178,13 @@ class RAGASEvaluator:
 
 class TruLensEvaluator:
     """TruLens评估器"""
-    
+
     def __init__(self, rag_chain=None):
+        self.using_mock = not TRULENS_AVAILABLE or rag_chain is None
         if not TRULENS_AVAILABLE:
             logger.warning("TruLens not available, creating mock evaluator")
             return
-        
+
         self.rag_chain = rag_chain
         
         # 初始化反馈函数
@@ -196,24 +203,28 @@ class TruLensEvaluator:
     async def evaluate_real_time(self, question: str, answer: str, context: str) -> Dict[str, float]:
         """实时评估"""
         if not TRULENS_AVAILABLE or not self.rag_chain:
+            self.using_mock = True
             return self._mock_trulens_evaluation()
-        
+
         try:
             # TruLens实时评估
             with self.tru_rag as recording:
                 result = await self.rag_chain.ainvoke(question)
-            
+
             # 获取反馈分数
             record = recording.get()
             scores = {}
-            
+
             for feedback_result in record.feedback_results:
                 scores[feedback_result.name] = feedback_result.score
-            
+
+            self.using_mock = False
+
             return scores
-            
+
         except Exception as e:
             logger.error(f"TruLens evaluation failed: {e}")
+            self.using_mock = True
             return self._mock_trulens_evaluation()
     
     def _mock_trulens_evaluation(self) -> Dict[str, float]:
@@ -411,12 +422,16 @@ class ComprehensiveEvaluator:
             metrics.context_recall_score = ragas_scores.get('context_recall')
             metrics.answer_correctness_score = ragas_scores.get('answer_correctness')
             metrics.answer_similarity_score = ragas_scores.get('answer_similarity')
-        
+        if getattr(self.ragas_evaluator, 'using_mock', False):
+            metrics.notes.append("RAGAS未安装或执行失败，已返回模拟评分。")
+
         # TruLens结果
         if len(results) > 1 and isinstance(results[1], dict):
             trulens_scores = results[1]
             metrics.groundedness_score = trulens_scores.get('groundedness')
             metrics.qa_relevance_score = trulens_scores.get('qa_relevance')
+        if getattr(self.trulens_evaluator, 'using_mock', False):
+            metrics.notes.append("TruLens未启用，使用模拟指标作为占位。")
         
         # 自定义指标结果
         if len(results) > 2 and isinstance(results[2], dict):
