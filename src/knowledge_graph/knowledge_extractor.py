@@ -6,12 +6,13 @@ import json
 from dataclasses import dataclass, field
 from pathlib import Path
 import networkx as nx
-import torch
-from transformers import AutoTokenizer, AutoModelForCausalLM, GenerationConfig
+from transformers import GenerationConfig
 from loguru import logger
 import sqlite3
 from datetime import datetime
 import hashlib
+
+from src.optimization.model_registry import ModelRegistry
 
 @dataclass
 class Entity:
@@ -43,25 +44,29 @@ class KnowledgeTriplet:
     confidence: float = 1.0
     source: str = ""
 
-class EntityExtractor:
-    """实体抽取器"""
-    
-    def __init__(self, model_name: str, device: str = "auto", token: Optional[str] = None):
-        self.device = "cuda" if torch.cuda.is_available() else "cpu"
+class _SharedLLMComponent:
+    """Utility mixin to reuse cached LLM resources."""
+
+    def __init__(self, model_name: str, device: str = "auto", token: Optional[str] = None, component_name: str = "KG component"):
+        resource = ModelRegistry.get_llm(model_name, device=device, token=token)
+        self.device = resource.device
         self.model_name = model_name
-        
-        logger.info(f"Loading Entity Extractor: {model_name}")
-        self.tokenizer = AutoTokenizer.from_pretrained(
-            model_name, trust_remote_code=True, token=token
+        self.tokenizer = resource.tokenizer
+        self.model = resource.model
+        logger.info(f"{component_name} using shared LLM: {model_name}")
+
+
+class EntityExtractor(_SharedLLMComponent):
+    """实体抽取器"""
+
+    def __init__(self, model_name: str, device: str = "auto", token: Optional[str] = None):
+        super().__init__(
+            model_name=model_name,
+            device=device,
+            token=token,
+            component_name="Entity Extractor"
         )
-        self.model = AutoModelForCausalLM.from_pretrained(
-            model_name,
-            torch_dtype="auto",
-            device_map="auto",
-            trust_remote_code=True,
-            token=token
-        )
-        
+
         self.generation_config = GenerationConfig(
             max_new_tokens=512,
             temperature=0.2,
@@ -208,25 +213,17 @@ Please output in the following JSON format:
         
         return entities
 
-class RelationExtractor:
+class RelationExtractor(_SharedLLMComponent):
     """关系抽取器"""
-    
+
     def __init__(self, model_name: str, device: str = "auto", token: Optional[str] = None):
-        self.device = "cuda" if torch.cuda.is_available() else "cpu"
-        self.model_name = model_name
-        
-        logger.info(f"Loading Relation Extractor: {model_name}")
-        self.tokenizer = AutoTokenizer.from_pretrained(
-            model_name, trust_remote_code=True, token=token
+        super().__init__(
+            model_name=model_name,
+            device=device,
+            token=token,
+            component_name="Relation Extractor"
         )
-        self.model = AutoModelForCausalLM.from_pretrained(
-            model_name,
-            torch_dtype="auto",
-            device_map="auto",
-            trust_remote_code=True,
-            token=token
-        )
-        
+
         self.generation_config = GenerationConfig(
             max_new_tokens=512,
             temperature=0.2,
@@ -660,48 +657,110 @@ class KnowledgeGraphIndexer:
         if not self.extractors_available:
             logger.warning("KG extractors not available, skipping knowledge graph construction")
             return
-        
+
         logger.info(f"Building knowledge graph from {len(chunks)} chunks...")
-        
+        try:
+            loop = asyncio.get_running_loop()
+            if loop.is_running():
+                logger.debug("Event loop detected; using sequential KG extraction fallback")
+                totals = self._build_knowledge_graph_sequential(chunks)
+            else:
+                totals = asyncio.run(self._build_knowledge_graph_async(chunks))
+        except RuntimeError:
+            totals = asyncio.run(self._build_knowledge_graph_async(chunks))
+
+        total_entities, total_relations = totals
+
+        # 加载图到内存
+        self.kg_db.load_graph_from_db()
+
+        logger.success(f"Knowledge graph constructed: {total_entities} entities, {total_relations} relations")
+        logger.info(f"Graph stats: {self.kg_db.graph.number_of_nodes()} nodes, {self.kg_db.graph.number_of_edges()} edges")
+
+    def _build_knowledge_graph_sequential(self, chunks: List[Dict]) -> Tuple[int, int]:
         total_entities = 0
         total_relations = 0
-        
+
         for i, chunk in enumerate(chunks):
             if i % 50 == 0:
                 logger.info(f"Processing chunk {i+1}/{len(chunks)}")
-            
+
             chunk_id = chunk['chunk_id']
             content = chunk['content']
-            
+
             try:
-                # 抽取实体
                 entities = self.entity_extractor.extract_entities(content, chunk_id)
-                
-                # 存储实体
                 for entity in entities:
                     self.kg_db.store_entity(entity)
-                
                 total_entities += len(entities)
-                
-                # 抽取关系
+
+                relations = []
                 if len(entities) >= 2:
                     relations = self.relation_extractor.extract_relations(content, entities, chunk_id)
-                    
-                    # 存储关系
                     for relation in relations:
                         self.kg_db.store_relation(relation)
-                    
-                    total_relations += len(relations)
-                
+                total_relations += len(relations)
             except Exception as e:
                 logger.error(f"Error processing chunk {chunk_id}: {e}")
+
+        return total_entities, total_relations
+
+    async def _build_knowledge_graph_async(self, chunks: List[Dict]) -> Tuple[int, int]:
+        total_entities = 0
+        total_relations = 0
+        semaphore = asyncio.Semaphore(self.config.get('kg_concurrency', 2)) if hasattr(self, 'config') else asyncio.Semaphore(2)
+
+        tasks = [
+            self._extract_chunk_async(chunk, semaphore, index, len(chunks))
+            for index, chunk in enumerate(chunks)
+        ]
+
+        results = await asyncio.gather(*tasks, return_exceptions=True)
+
+        for result in results:
+            if isinstance(result, Exception):
+                logger.error(f"Async KG extraction encountered an error: {result}")
                 continue
-        
-        # 加载图到内存
-        self.kg_db.load_graph_from_db()
-        
-        logger.success(f"Knowledge graph constructed: {total_entities} entities, {total_relations} relations")
-        logger.info(f"Graph stats: {self.kg_db.graph.number_of_nodes()} nodes, {self.kg_db.graph.number_of_edges()} edges")
+
+            chunk_id, entities, relations = result
+            for entity in entities:
+                self.kg_db.store_entity(entity)
+            total_entities += len(entities)
+
+            for relation in relations:
+                self.kg_db.store_relation(relation)
+            total_relations += len(relations)
+
+        return total_entities, total_relations
+
+    async def _extract_chunk_async(
+        self,
+        chunk: Dict,
+        semaphore: asyncio.Semaphore,
+        index: int,
+        total: int
+    ) -> Tuple[str, List[Entity], List[Relation]]:
+        if index % 50 == 0:
+            logger.info(f"Async KG processing chunk {index + 1}/{total}")
+
+        chunk_id = chunk['chunk_id']
+        content = chunk['content']
+
+        async with semaphore:
+            try:
+                entities = await asyncio.to_thread(self.entity_extractor.extract_entities, content, chunk_id)
+                relations: List[Relation] = []
+                if len(entities) >= 2:
+                    relations = await asyncio.to_thread(
+                        self.relation_extractor.extract_relations,
+                        content,
+                        entities,
+                        chunk_id
+                    )
+                return chunk_id, entities, relations
+            except Exception as e:
+                logger.error(f"Async KG extraction failed for chunk {chunk_id}: {e}")
+                return chunk_id, [], []
     
     def query_knowledge_graph(
         self, 

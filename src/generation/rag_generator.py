@@ -1,14 +1,18 @@
 # src/generation/rag_generator.py
 from typing import List, Dict, Optional, Tuple
 import asyncio
+from collections import OrderedDict
 from dataclasses import dataclass
-from sentence_transformers import SentenceTransformer
-import torch
-from transformers import AutoTokenizer, AutoModelForCausalLM, GenerationConfig
+import hashlib
+from threading import Lock
+from difflib import SequenceMatcher
+from transformers import GenerationConfig
 from loguru import logger
 import json
 from pathlib import Path
 import re
+
+from src.optimization.model_registry import ModelRegistry
 
 # Assuming these classes are in their respective files as per the project structure
 from src.retrieval.vector_database import VectorDatabaseManager
@@ -38,10 +42,23 @@ class GenerationResult:
     total_cost: Optional[float] = None
 
 class EnhancedQueryProcessor:
-    """增强的查询处理器 - 集成查询智能"""
-    def __init__(self, embedding_model: str = "BAAI/bge-m3", config: Optional[Dict] = None):
-        self.embedder = SentenceTransformer(embedding_model)
-        
+    """增强的查询处理器 - 集成查询智能并缓存查询向量"""
+
+    def __init__(
+        self,
+        embedding_model: str = "BAAI/bge-m3",
+        config: Optional[Dict] = None,
+    ):
+        resolved_device = config.get('device', 'auto') if config else 'auto'
+        self.embedder = ModelRegistry.get_sentence_transformer(
+            embedding_model, device=resolved_device
+        )
+
+        # Query vector cache prevents repeated encoding of the same prompts
+        self._cache_lock: Lock = Lock()
+        self._vector_cache: OrderedDict[str, object] = OrderedDict()
+        self._cache_size = (config or {}).get('query_vector_cache_size', 256)
+
         # Initialize Query Intelligence Engine if config provided
         self.query_intelligence = None
         if config:
@@ -49,17 +66,40 @@ class EnhancedQueryProcessor:
                 self.query_intelligence = QueryIntelligenceEngine(config)
                 logger.info("Enhanced Query Processor with Intelligence initialized.")
             except Exception as e:
-                logger.warning(f"Query Intelligence initialization failed: {e}. Using basic processing.")
+                logger.warning(
+                    f"Query Intelligence initialization failed: {e}. Using basic processing."
+                )
         else:
             logger.info("Basic Query Processor initialized.")
-    
+
+    def _get_cached_vector(self, text: str):
+        cache_key = text.strip()
+        with self._cache_lock:
+            if cache_key in self._vector_cache:
+                self._vector_cache.move_to_end(cache_key)
+                return self._vector_cache[cache_key]
+
+        vector = self.embedder.encode([text], convert_to_numpy=True)[0]
+
+        with self._cache_lock:
+            self._vector_cache[cache_key] = vector
+            if len(self._vector_cache) > self._cache_size:
+                self._vector_cache.popitem(last=False)
+
+        return vector
+
+    def get_vector(self, text: str):
+        """Expose cached vector retrieval for external callers."""
+
+        return self._get_cached_vector(text)
+
     def process_query(self, query: str) -> Dict:
         language = 'zh' if re.search(r'[\u4e00-\u9fff]', query) else 'en'
-        
+
         result = {
             'original_query': query,
             'language': language,
-            'query_vector': self.embedder.encode([query], convert_to_numpy=True)[0],
+            'query_vector': self.get_vector(query),
             'processed_query': query,
             'optimized_queries': [query],
             'hyde_document': '',
@@ -167,31 +207,24 @@ ContextOptimizer = EnhancedContextOptimizer
 class LLMGenerator:
     """大语言模型生成器"""
     def __init__(
-        self, 
+        self,
         model_name: str,
         device: str = "auto",
         max_new_tokens: int = 1024,
         token: Optional[str] = None  # 新增: 接收token
     ):
         self.model_name = model_name
-        self.device = "cuda" if torch.cuda.is_available() else "cpu"
-        logger.info(f"Loading LLM: {model_name} on {self.device}")
-        
-        # 修改: 在加载时传递token
-        self.tokenizer = AutoTokenizer.from_pretrained(model_name, trust_remote_code=True, token=token)
-        self.model = AutoModelForCausalLM.from_pretrained(
-            model_name,
-            torch_dtype="auto",
-            device_map="auto",
-            trust_remote_code=True,
-            token=token  # 修改: 在加载时传递token
-        )
-        
+        llm_resource = ModelRegistry.get_llm(model_name, device=device, token=token)
+        self.device = llm_resource.device
+        self.tokenizer = llm_resource.tokenizer
+        self.model = llm_resource.model
+        logger.info(f"Using shared LLM: {model_name} on {self.device}")
+
         self.generation_config = GenerationConfig(
             max_new_tokens=max_new_tokens, temperature=0.1, top_p=0.8, do_sample=True,
             repetition_penalty=1.1, pad_token_id=self.tokenizer.eos_token_id
         )
-        logger.success("LLM loaded.")
+        logger.success("LLM generator ready (shared instance).")
     
     def generate_answer(self, query: str, context: str) -> Tuple[str, int]:
         prompt = f"Context:\n{context}\n\nQuestion: {query}\n\nAnswer:"
@@ -245,7 +278,7 @@ class EnhancedRAGSystem:
         if query_info['optimized_queries']:
             retrieval_strategies.append('multi_query')
             for i, opt_query in enumerate(query_info['optimized_queries'][:3]):  # Limit to top 3
-                query_vector = self.query_processor.embedder.encode([opt_query], convert_to_numpy=True)[0]
+                query_vector = self.query_processor.get_vector(opt_query)
                 chunks = self.db_manager.search(
                     query_vector=query_vector,
                     query_text=opt_query,
@@ -261,7 +294,7 @@ class EnhancedRAGSystem:
         # Strategy 2: HyDE retrieval if available
         if query_info['hyde_document']:
             retrieval_strategies.append('hyde')
-            hyde_vector = self.query_processor.embedder.encode([query_info['hyde_document']], convert_to_numpy=True)[0]
+            hyde_vector = self.query_processor.get_vector(query_info['hyde_document'])
             hyde_chunks = self.db_manager.search(
                 query_vector=hyde_vector,
                 query_text=query_info['hyde_document'],
@@ -345,20 +378,52 @@ class EnhancedRAGSystem:
         )
     
     def _deduplicate_chunks(self, chunks: List[Dict]) -> List[Dict]:
-        """去重文档块，基于内容相似度"""
+        """去重文档块，优先使用chunk_id并结合内容相似度判定"""
         if not chunks:
             return []
-        
-        unique_chunks = []
-        seen_contents = set()
-        
+
+        unique_chunks: List[Dict] = []
+        seen_ids = set()
+        seen_hashes: Dict[str, str] = {}
+
         for chunk in chunks:
-            content_hash = hash(chunk['content'][:200])  # Use first 200 chars for deduplication
-            if content_hash not in seen_contents:
-                seen_contents.add(content_hash)
+            content = chunk.get('content', '') or ''
+            chunk_id = chunk.get('chunk_id')
+
+            if chunk_id and chunk_id in seen_ids:
+                continue
+
+            content_hash = hashlib.sha256(content.encode('utf-8')).hexdigest()
+            is_duplicate = False
+
+            if content_hash in seen_hashes:
+                is_duplicate = True
+            else:
+                # Compare with previously stored snippets for near-duplicate detection
+                for existing_snippet in seen_hashes.values():
+                    if self._is_similar_text(content, existing_snippet):
+                        is_duplicate = True
+                        break
+
+            if not is_duplicate:
                 unique_chunks.append(chunk)
-        
+                if chunk_id:
+                    seen_ids.add(chunk_id)
+                # Store a trimmed snippet to keep memory bounded
+                seen_hashes[content_hash] = content[:512]
+
         return unique_chunks
+
+    @staticmethod
+    def _is_similar_text(current: str, other: str, threshold: float = 0.92) -> bool:
+        if not current or not other:
+            return False
+
+        window_current = current[:500]
+        window_other = other[:500]
+
+        similarity = SequenceMatcher(None, window_current, window_other).ratio()
+        return similarity >= threshold
     
     def _calculate_confidence(self, final_chunks: List[Dict], query_info: Dict) -> float:
         """计算答案置信度"""
