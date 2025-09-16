@@ -133,7 +133,9 @@
   - `QueryComplexityAnalyzer` 判断问题难度；
   - `SubQuestionGenerator`、`QueryRewriter`、`HyDEGenerator` 使用共享 LLM 生成子问题、改写版本和假设文档；
   - `get_optimized_queries` 汇总原问 + 重写 + 子问题，并去重；
+
   - 上游查询处理器会复用这些结果并结合查询向量缓存，减少重复编码。
+
 - [`EnhancedQueryProcessor`](../src/generation/rag_generator.py) 维护查询向量的 LRU 缓存，避免重复编码同一句话，同时记录查询分析结果供回答解释。
 - [`hybrid_retriever.py`](../src/retrieval/hybrid_retriever.py) 将稠密检索、BM25 稀疏检索、知识图谱检索组合成 `HybridRetriever`，并给每个 `EnhancedDocument` 打上 `RetrievalMetadata`，记录来源、置信度、权威性等。
 - 智能体式检索：[`agentic_rag.py`](../src/retrieval/agentic_rag.py) & [`enhanced_agentic_rag.py`](../src/retrieval/enhanced_agentic_rag.py) 在检索回合之间调用 LLM 评估器判断是否需要扩展查询、补充信息或终止，形成检索—评估—再检索的闭环。
