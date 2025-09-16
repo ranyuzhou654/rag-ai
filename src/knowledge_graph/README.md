@@ -21,4 +21,5 @@
 
 ## 与主流程的集成
 - `src/generation/rag_generator.py` 在 `EnhancedRAGSystem` 中可选引入 `KnowledgeGraphRetriever`，将 `kg_entities`、`kg_relations` 附加到 `GenerationResult` 中，为用户展示图谱证据。
+
 - `build_knowledge_graph` 可由 `TextProcessor` 输出的 chunk 列表直接调用，使知识图谱与向量库同步更新。
