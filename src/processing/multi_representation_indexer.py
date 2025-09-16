@@ -3,13 +3,13 @@ from typing import List, Dict, Optional, Tuple
 import asyncio
 from dataclasses import dataclass, field
 import numpy as np
-from sentence_transformers import SentenceTransformer
-import torch
-from transformers import AutoTokenizer, AutoModelForCausalLM, GenerationConfig
+from transformers import GenerationConfig
 from loguru import logger
 import re
 import json
 from pathlib import Path
+
+from src.optimization.model_registry import ModelRegistry
 
 @dataclass
 class MultiRepresentationChunk:
@@ -28,29 +28,33 @@ class MultiRepresentationChunk:
     
     hypothetical_questions: List[str] = field(default_factory=list)
     questions_embeddings: List[np.ndarray] = field(default_factory=list)
-    
+
     # Semantic type for better filtering
     semantic_type: str = 'content'  # 'content', 'summary', 'question'
 
-class SummaryGenerator:
-    """文档摘要生成器"""
-    
-    def __init__(self, model_name: str, device: str = "auto", token: Optional[str] = None):
-        self.device = "cuda" if torch.cuda.is_available() else "cpu"
+
+class _SharedLLMComponent:
+    """Helper mixin to reuse cached LLM instances."""
+
+    def __init__(self, model_name: str, device: str = "auto", token: Optional[str] = None, component_name: str = "LLM component"):
+        resource = ModelRegistry.get_llm(model_name, device=device, token=token)
+        self.device = resource.device
         self.model_name = model_name
-        
-        logger.info(f"Loading Summary Generator: {model_name}")
-        self.tokenizer = AutoTokenizer.from_pretrained(
-            model_name, trust_remote_code=True, token=token
+        self.tokenizer = resource.tokenizer
+        self.model = resource.model
+        logger.info(f"{component_name} using shared model: {model_name}")
+
+class SummaryGenerator(_SharedLLMComponent):
+    """文档摘要生成器"""
+
+    def __init__(self, model_name: str, device: str = "auto", token: Optional[str] = None):
+        super().__init__(
+            model_name=model_name,
+            device=device,
+            token=token,
+            component_name="Summary Generator"
         )
-        self.model = AutoModelForCausalLM.from_pretrained(
-            model_name,
-            torch_dtype="auto",
-            device_map="auto",
-            trust_remote_code=True,
-            token=token
-        )
-        
+
         self.generation_config = GenerationConfig(
             max_new_tokens=200,  # Shorter for summaries
             temperature=0.3,
@@ -101,25 +105,17 @@ Summary:"""
             # Fallback: return first part of text
             return text[:max_length] + "..." if len(text) > max_length else text
 
-class QuestionGenerator:
+class QuestionGenerator(_SharedLLMComponent):
     """假设性问题生成器"""
-    
+
     def __init__(self, model_name: str, device: str = "auto", token: Optional[str] = None):
-        self.device = "cuda" if torch.cuda.is_available() else "cpu"
-        self.model_name = model_name
-        
-        logger.info(f"Loading Question Generator: {model_name}")
-        self.tokenizer = AutoTokenizer.from_pretrained(
-            model_name, trust_remote_code=True, token=token
+        super().__init__(
+            model_name=model_name,
+            device=device,
+            token=token,
+            component_name="Question Generator"
         )
-        self.model = AutoModelForCausalLM.from_pretrained(
-            model_name,
-            torch_dtype="auto",
-            device_map="auto",
-            trust_remote_code=True,
-            token=token
-        )
-        
+
         self.generation_config = GenerationConfig(
             max_new_tokens=300,
             temperature=0.4,
@@ -184,9 +180,9 @@ class MultiRepresentationIndexer:
     
     def __init__(self, config: Dict):
         self.config = config
-        
+
         # Initialize embedding model
-        self.embedder = SentenceTransformer(
+        self.embedder = ModelRegistry.get_sentence_transformer(
             config.get('embedding_model', 'BAAI/bge-m3'),
             device=config.get('device', 'auto')
         )
@@ -212,51 +208,68 @@ class MultiRepresentationIndexer:
         else:
             logger.warning("Multi-Representation Indexer initialized without LLM support")
     
-    def create_multi_representations(
-        self, 
+    async def create_multi_representations(
+        self,
         chunks: List[Dict]
     ) -> List[MultiRepresentationChunk]:
-        """为文本块创建多表示索引"""
-        logger.info(f"Creating multi-representations for {len(chunks)} chunks...")
-        
-        multi_rep_chunks = []
-        
-        for i, chunk in enumerate(chunks):
-            if i % 50 == 0:
-                logger.info(f"Processing chunk {i+1}/{len(chunks)}")
-            
-            # Create base multi-representation chunk
-            multi_chunk = MultiRepresentationChunk(
-                content=chunk['content'],
-                chunk_id=chunk['chunk_id'],
-                source_id=chunk['source_id'],
-                metadata=chunk.get('metadata', {}),
-                content_embedding=chunk.get('embedding')
-            )
-            
-            # Generate additional representations if LLM is available
-            if self.llm_available:
-                try:
-                    # Generate summary
-                    multi_chunk.summary = self.summary_generator.generate_summary(
-                        chunk['content'], max_length=150
-                    )
-                    
-                    # Generate hypothetical questions
-                    multi_chunk.hypothetical_questions = self.question_generator.generate_questions(
-                        chunk['content'], num_questions=3
-                    )
-                    
-                except Exception as e:
-                    logger.error(f"Error generating representations for chunk {chunk['chunk_id']}: {e}")
-            
-            multi_rep_chunks.append(multi_chunk)
-        
+        """为文本块创建多表示索引，使用异步生成提升吞吐"""
+        logger.info(f"Creating multi-representations for {len(chunks)} chunks asynchronously...")
+
+        semaphore = asyncio.Semaphore(self.config.get('multi_rep_concurrency', 3))
+        tasks = [
+            self._prepare_single_chunk(chunk, semaphore, index, len(chunks))
+            for index, chunk in enumerate(chunks)
+        ]
+
+        multi_rep_chunks = await asyncio.gather(*tasks)
+
         # Batch embed all representations
         self._embed_representations(multi_rep_chunks)
-        
+
         logger.success(f"Multi-representation indexing complete for {len(multi_rep_chunks)} chunks")
         return multi_rep_chunks
+
+    async def _prepare_single_chunk(
+        self,
+        chunk: Dict,
+        semaphore: asyncio.Semaphore,
+        index: int,
+        total: int
+    ) -> MultiRepresentationChunk:
+        if index % 50 == 0:
+            logger.info(f"Preparing chunk {index + 1}/{total}")
+
+        multi_chunk = MultiRepresentationChunk(
+            content=chunk['content'],
+            chunk_id=chunk['chunk_id'],
+            source_id=chunk['source_id'],
+            metadata=chunk.get('metadata', {}),
+            content_embedding=chunk.get('embedding')
+        )
+
+        if not self.llm_available:
+            return multi_chunk
+
+        async with semaphore:
+            try:
+                summary_task = asyncio.to_thread(
+                    self.summary_generator.generate_summary,
+                    chunk['content'],
+                    150
+                )
+                questions_task = asyncio.to_thread(
+                    self.question_generator.generate_questions,
+                    chunk['content'],
+                    3
+                )
+
+                summary, questions = await asyncio.gather(summary_task, questions_task)
+                multi_chunk.summary = summary
+                multi_chunk.hypothetical_questions = questions
+            except Exception as e:
+                logger.error(f"Error generating representations for chunk {chunk['chunk_id']}: {e}")
+
+        return multi_chunk
     
     def _embed_representations(self, chunks: List[MultiRepresentationChunk]):
         """批量嵌入所有表示形式"""

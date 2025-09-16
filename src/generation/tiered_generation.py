@@ -5,12 +5,13 @@ import time
 from dataclasses import dataclass
 from enum import Enum
 import re
-import torch
-from transformers import AutoTokenizer, AutoModelForCausalLM, GenerationConfig
+from transformers import GenerationConfig
 from loguru import logger
 import openai
 from pathlib import Path
 import json
+
+from src.optimization.model_registry import ModelRegistry
 
 class TaskComplexity(Enum):
     """任务复杂度"""
@@ -261,25 +262,18 @@ class TaskRouter:
 
 class LocalModelExecutor:
     """本地模型执行器"""
-    
+
     def __init__(self, model_config: ModelConfig, device: str = "auto", token: Optional[str] = None):
         self.config = model_config
-        self.device = "cuda" if torch.cuda.is_available() else "cpu"
-        
-        # 加载模型
-        logger.info(f"Loading local model: {model_config.name}")
-        self.tokenizer = AutoTokenizer.from_pretrained(
-            model_config.name, trust_remote_code=True, token=token
-        )
-        self.model = AutoModelForCausalLM.from_pretrained(
-            model_config.name,
-            torch_dtype="auto",
-            device_map="auto",
-            trust_remote_code=True,
-            token=token
-        )
-        
-        logger.success(f"Local model {model_config.name} loaded")
+        resource = ModelRegistry.get_llm(model_config.name, device=device, token=token)
+        self.device = resource.device
+
+        # 使用共享模型
+        logger.info(f"Local model executor using shared model: {model_config.name}")
+        self.tokenizer = resource.tokenizer
+        self.model = resource.model
+
+        logger.success(f"Local model {model_config.name} ready (shared)")
     
     async def execute(self, task: TaskRequest) -> TaskResponse:
         """执行任务"""

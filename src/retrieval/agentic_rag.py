@@ -6,8 +6,9 @@ from enum import Enum
 import time
 import re
 from loguru import logger
-import torch
-from transformers import AutoTokenizer, AutoModelForCausalLM, GenerationConfig
+from transformers import GenerationConfig
+
+from src.optimization.model_registry import ModelRegistry
 
 class RetrievalDecision(Enum):
     """检索决策类型"""
@@ -39,23 +40,16 @@ class AgenticStep:
 
 class RetrievalEvaluator:
     """检索质量评估器"""
-    
+
     def __init__(self, model_name: str, device: str = "auto", token: Optional[str] = None):
-        self.device = "cuda" if torch.cuda.is_available() else "cpu"
+        resource = ModelRegistry.get_llm(model_name, device=device, token=token)
+        self.device = resource.device
         self.model_name = model_name
-        
-        logger.info(f"Loading Retrieval Evaluator: {model_name}")
-        self.tokenizer = AutoTokenizer.from_pretrained(
-            model_name, trust_remote_code=True, token=token
-        )
-        self.model = AutoModelForCausalLM.from_pretrained(
-            model_name,
-            torch_dtype="auto",
-            device_map="auto",
-            trust_remote_code=True,
-            token=token
-        )
-        
+
+        logger.info(f"Retrieval Evaluator using shared LLM: {model_name}")
+        self.tokenizer = resource.tokenizer
+        self.model = resource.model
+
         self.generation_config = GenerationConfig(
             max_new_tokens=400,
             temperature=0.2,
@@ -270,23 +264,16 @@ Suggested Query: [If retry is needed, provide suggested query terms]"""
 
 class QueryRefiner:
     """查询优化器"""
-    
+
     def __init__(self, model_name: str, device: str = "auto", token: Optional[str] = None):
-        self.device = "cuda" if torch.cuda.is_available() else "cpu"
+        resource = ModelRegistry.get_llm(model_name, device=device, token=token)
+        self.device = resource.device
         self.model_name = model_name
-        
-        logger.info(f"Loading Query Refiner: {model_name}")
-        self.tokenizer = AutoTokenizer.from_pretrained(
-            model_name, trust_remote_code=True, token=token
-        )
-        self.model = AutoModelForCausalLM.from_pretrained(
-            model_name,
-            torch_dtype="auto", 
-            device_map="auto",
-            trust_remote_code=True,
-            token=token
-        )
-        
+
+        logger.info(f"Query Refiner using shared LLM: {model_name}")
+        self.tokenizer = resource.tokenizer
+        self.model = resource.model
+
         self.generation_config = GenerationConfig(
             max_new_tokens=200,
             temperature=0.3,
