@@ -26,4 +26,5 @@
 - `AgenticRAGOrchestrator.agentic_retrieve_and_generate` 在 [`agentic_rag.py#L229-L360`](./agentic_rag.py#L229-L360) 中结合查询智能、向量检索与评估器反馈进行多轮检索，并记录每次 `AgenticStep`，供最终回答回溯。
 
 ## 与生成模块协同
+
 `EnhancedQueryProcessor` 与 `EnhancedContextOptimizer`（位于 `src/generation/rag_generator.py`）分别调用 `QueryIntelligenceEngine` 与 `ContextualCompressor`/`SmartReranker`，复用共享模型实例并输出优化后的上下文，为回答生成提供高质量输入。
