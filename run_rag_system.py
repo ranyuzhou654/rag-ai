@@ -114,39 +114,6 @@ class RAGSystemRunner:
         
         return success
 
-    async def run_full_pipeline(self, args):
-        """运行完整的RAG系统流程"""
-        logger.info("🚀 开始运行完整的RAG系统流程...")
-        start_time = time.time()
-        
-        # 1. 环境检查 (可以根据需要保留或简化)
-        
-        # 2. 数据收集
-        if not args.skip_collect:
-            if not await self.collect_data(args.max_papers, args.days_back):
-                logger.error("❌ 数据收集失败")
-                return False
-        
-        # 3. 数据处理
-        if not args.skip_process:
-            if not await self.process_data():
-                logger.error("❌ 数据处理失败") 
-                return False
-        
-        # 4. 构建知识库
-        if not args.skip_build:
-            if not self.build_knowledge_base():
-                logger.error("❌ 知识库构建失败")
-                return False
-
-        logger.info(f"✅ RAG系统准备完成! 总耗时: {time.time() - start_time:.1f}秒")
-        
-        # 5. 启动前端
-        if not args.no_frontend:
-            self.launch_frontend(args.port)
-        
-        return True
-    
     async def collect_data(self, max_papers: int = 50, days_back: int = 7) -> bool:
         """数据收集步骤"""
         logger.info("📥 开始数据收集...")
@@ -191,17 +158,20 @@ class RAGSystemRunner:
             logger.info(f"📄 加载到 {len(documents)} 个文档")
             
             # 初始化处理器
-            config = {
-                'chunk_size': 512,
-                'overlap': 50,
-                'embedding_model': 'BAAI/bge-m3',
-                'device': 'auto'
+            processor_config = {
+                'chunk_size': config.CHUNK_SIZE,
+                'chunk_overlap': config.CHUNK_OVERLAP,
+                'embedding_model': config.EMBEDDING_MODEL,
+                'device': config.DEVICE,
+                'enable_multi_representation': config.ENABLE_MULTI_REPRESENTATION,
+                'llm_model': config.LLM_MODEL,
+                'HUGGING_FACE_TOKEN': config.HUGGING_FACE_TOKEN
             }
-            
-            processor = TextProcessor(config)
-            
+
+            processor = TextProcessor(processor_config)
+
             # 处理文档
-            chunks = processor.process_documents(documents)
+            chunks = await processor.process_documents(documents)
             
             if not chunks:
                 logger.error("❌ 文档处理失败，没有生成有效的文本块")
@@ -231,18 +201,26 @@ class RAGSystemRunner:
                 logger.error(f"❌ 找不到处理后的数据文件: {processed_file}")
                 return False
             
-            # 初始化数据库管理器
-            config = {
-                'qdrant_host': 'localhost',
-                'qdrant_port': 6333,
-                'collection_name': 'ai_papers',
-                'vector_size': 1024
+            with open(processed_file, 'r', encoding='utf-8') as f:
+                processed_chunks = json.load(f)
+
+            sample_vector = next((chunk.get('embedding') for chunk in processed_chunks if chunk.get('embedding')), None)
+            vector_size = len(sample_vector) if sample_vector else 0
+            if not vector_size:
+                vector_size = 1024  # 合理的默认值
+
+            db_config = {
+                'qdrant_host': config.QDRANT_HOST,
+                'qdrant_port': config.QDRANT_PORT,
+                'collection_name': config.COLLECTION_NAME,
+                'vector_size': vector_size,
+                'qdrant_timeout': getattr(config, 'QDRANT_TIMEOUT', 120)
             }
-            
-            db_manager = VectorDatabaseManager(config)
-            
+
+            db_manager = VectorDatabaseManager(db_config)
+
             # 构建知识库
-            success = db_manager.build_knowledge_base(processed_file)
+            success = db_manager.build_knowledge_base(processed_file, chunks=processed_chunks)
             
             if success:
                 # 显示统计信息
@@ -267,18 +245,18 @@ class RAGSystemRunner:
             from src.generation.rag_generator import RAGSystem
             from src.retrieval.vector_database import VectorDatabaseManager
             
-            # 初始化系统
-            config = {
-                'embedding_model': 'BAAI/bge-m3',
-                'llm_model': 'Qwen/Qwen2-7B-Instruct',
-                'device': 'auto',
-                'qdrant_host': 'localhost',
-                'qdrant_port': 6333,
-                'collection_name': 'ai_papers'
+            rag_settings = {
+                'embedding_model': config.EMBEDDING_MODEL,
+                'llm_model': config.LLM_MODEL,
+                'device': config.DEVICE,
+                'qdrant_host': config.QDRANT_HOST,
+                'qdrant_port': config.QDRANT_PORT,
+                'collection_name': config.COLLECTION_NAME,
+                'HUGGING_FACE_TOKEN': config.HUGGING_FACE_TOKEN
             }
-            
-            rag_system = RAGSystem(config)
-            db_manager = VectorDatabaseManager(config)
+
+            rag_system = RAGSystem(rag_settings)
+            db_manager = VectorDatabaseManager(rag_settings)
             rag_system.set_database(db_manager)
             
             # 测试查询
