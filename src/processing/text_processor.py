@@ -3,13 +3,12 @@ import re
 from typing import List, Dict, Optional
 from dataclasses import dataclass, field
 import numpy as np
-from sentence_transformers import SentenceTransformer
-import torch
 from loguru import logger
 from langchain_text_splitters import RecursiveCharacterTextSplitter
 import json
 from pathlib import Path
 from .multi_representation_indexer import MultiRepresentationIndexer
+from src.optimization.model_registry import ModelRegistry
 
 @dataclass
 class TextChunk:
@@ -87,16 +86,11 @@ class MultilingualEmbedder:
     多语言向量化器 (保持不变，但确认与BGE-M3模型一起使用)
     """
     def __init__(self, model_name: str = "BAAI/bge-m3", device: str = "auto"):
-        self.device = self._get_device(device)
-        logger.info(f"Loading multilingual embedding model: {model_name} on device: {self.device}")
-        self.model = SentenceTransformer(model_name, device=self.device)
+        logger.info(f"Loading multilingual embedding model: {model_name} (shared)")
+        self.model = ModelRegistry.get_sentence_transformer(model_name, device=device)
+        self.device = str(self.model.device)
         self.embedding_dim = self.model.get_sentence_embedding_dimension()
         logger.success(f"Embedder ready. Vector dimension: {self.embedding_dim}")
-
-    def _get_device(self, device: str) -> str:
-        if device == "auto":
-            return "cuda" if torch.cuda.is_available() else "cpu"
-        return device
 
     def embed_chunks(self, chunks: List[TextChunk]) -> List[TextChunk]:
         """批量向量化文本块"""
@@ -145,11 +139,11 @@ class EnhancedTextProcessor:
         else:
             logger.info("Basic Text Processor initialized")
 
-    def process_documents(self, documents: List[Dict]) -> List[Dict]:
+    async def process_documents(self, documents: List[Dict]) -> List[Dict]:
         """完整的文档处理流程 - 支持多表示索引"""
         logger.info(f"Starting to process {len(documents)} documents...")
         all_chunks = []
-        
+
         # Step 1: Split documents into chunks
         for doc in documents:
             chunks = self.splitter.split_document(
@@ -177,8 +171,8 @@ class EnhancedTextProcessor:
                 }
                 chunks_dict.append(chunk_dict)
             
-            # Create multi-representations
-            multi_rep_chunks = self.multi_rep_indexer.create_multi_representations(chunks_dict)
+            # Create multi-representations asynchronously
+            multi_rep_chunks = await self.multi_rep_indexer.create_multi_representations(chunks_dict)
             
             # Generate index entries for vector database
             index_entries = self.multi_rep_indexer.generate_index_entries(multi_rep_chunks)

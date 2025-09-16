@@ -62,14 +62,15 @@ class MultiSourceCollector:
     async def collect_all(self, days_back: int = 7) -> List[Document]:
         """从所有配置的数据源并行收集数据"""
         logger.info("🚀 Starting data collection from all sources...")
-        
-        tasks = [
-            self.fetch_arxiv_papers(days_back=days_back),
-            self.fetch_huggingface_papers(),
-            self.fetch_blog_posts()
-        ]
 
-        results = await asyncio.gather(*tasks, return_exceptions=True)
+        async with aiohttp.ClientSession() as session:
+            tasks = [
+                self.fetch_arxiv_papers(session, days_back=days_back),
+                self.fetch_huggingface_papers(),
+                self.fetch_blog_posts()
+            ]
+
+            results = await asyncio.gather(*tasks, return_exceptions=True)
         
         all_docs = []
         for res in results:
@@ -93,31 +94,30 @@ class MultiSourceCollector:
         logger.info(f"💾 Raw data saved to {self.raw_data_path}")
 
     # --- ArXiv Collector ---
-    async def fetch_arxiv_papers(self, query: str = "cat:cs.AI OR cat:cs.CL OR cat:cs.LG", days_back: int = 7) -> List[Document]:
+    async def fetch_arxiv_papers(self, session: aiohttp.ClientSession, query: str = "cat:cs.AI OR cat:cs.CL OR cat:cs.LG", days_back: int = 7) -> List[Document]:
         logger.info("🔍 Collecting from ArXiv...")
         base_url = "http://export.arxiv.org/api/query"
         params = {
             'search_query': query, 'start': 0, 'max_results': 100,
             'sortBy': 'submittedDate', 'sortOrder': 'descending'
         }
-        
-        async with aiohttp.ClientSession() as session:
-            try:
-                async with session.get(base_url, params=params) as response:
-                    if response.status != 200:
-                        logger.error(f"ArXiv API request failed: {response.status}")
-                        return []
-                    
-                    xml_content = await response.text()
-                    parsed_papers = self._parse_arxiv_response(xml_content, days_back)
-                    
-                    # 下载并解析PDF
-                    processed_papers = await self.download_and_extract_pdfs(parsed_papers)
-                    logger.success(f"ArXiv collection successful: {len(processed_papers)} papers.")
-                    return processed_papers
-            except Exception as e:
-                logger.error(f"Error fetching ArXiv papers: {e}")
-                return []
+
+        try:
+            async with session.get(base_url, params=params) as response:
+                if response.status != 200:
+                    logger.error(f"ArXiv API request failed: {response.status}")
+                    return []
+
+                xml_content = await response.text()
+                parsed_papers = self._parse_arxiv_response(xml_content, days_back)
+
+                # 下载并解析PDF
+                processed_papers = await self.download_and_extract_pdfs(parsed_papers, session)
+                logger.success(f"ArXiv collection successful: {len(processed_papers)} papers.")
+                return processed_papers
+        except Exception as e:
+            logger.error(f"Error fetching ArXiv papers: {e}")
+            return []
     
     def _parse_arxiv_response(self, xml_content: str, days_back: int) -> List[Dict]:
         """解析ArXiv API的XML响应"""
@@ -148,28 +148,27 @@ class MultiSourceCollector:
             })
         return papers
 
-    async def download_and_extract_pdfs(self, papers: List[Dict]) -> List[Document]:
+    async def download_and_extract_pdfs(self, papers: List[Dict], session: aiohttp.ClientSession) -> List[Document]:
         """并发下载PDF并提取文本"""
         semaphore = asyncio.Semaphore(5)
-        tasks = [self._process_single_pdf(paper, semaphore) for paper in papers]
+        tasks = [self._process_single_pdf(paper, semaphore, session) for paper in papers]
         results = await asyncio.gather(*tasks)
         return [doc for doc in results if doc]
 
-    async def _process_single_pdf(self, paper_meta: Dict, semaphore: asyncio.Semaphore) -> Optional[Document]:
+    async def _process_single_pdf(self, paper_meta: Dict, semaphore: asyncio.Semaphore, session: aiohttp.ClientSession) -> Optional[Document]:
         """处理单个PDF的下载和文本提取"""
         async with semaphore:
             pdf_path = self.pdf_dir / f"{paper_meta['id']}.pdf"
             try:
                 # Download PDF
                 if not pdf_path.exists():
-                    async with aiohttp.ClientSession() as session:
-                        async with session.get(paper_meta['pdf_url']) as response:
-                            if response.status == 200:
-                                with open(pdf_path, 'wb') as f:
-                                    f.write(await response.read())
-                            else:
-                                logger.warning(f"Failed to download {paper_meta['pdf_url']}")
-                                return None
+                    async with session.get(paper_meta['pdf_url']) as response:
+                        if response.status == 200:
+                            with open(pdf_path, 'wb') as f:
+                                f.write(await response.read())
+                        else:
+                            logger.warning(f"Failed to download {paper_meta['pdf_url']}")
+                            return None
                 
                 # Extract text
                 extracted_text = self._extract_text_from_pdf(pdf_path)
