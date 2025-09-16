@@ -3,8 +3,9 @@
 `run_rag_system.py` 将整个 RAG 系统的生命周期封装到一个可配置的一键脚本中，负责从环境检测、数据采集到前端启动的所有阶段。
 
 ## 入口结构
-- `main()` 负责解析命令行参数、触发 Hugging Face 登录并根据便捷开关决定是否仅启动前端或执行全流程。核心逻辑位于 [`main`](../../run_rag_system.py#L400-L468)，最终委托 `RAGSystemRunner` 来执行任务。
-- `RAGSystemRunner.__init__` 会在 [`run_rag_system.py`](../../run_rag_system.py#L31-L63) 中检查并补齐 `data/raw`、`data/processed` 等目录，保证项目结构与配置一致。
+
+- `main()` 负责解析命令行参数、触发 Hugging Face 登录并根据便捷开关决定是否仅启动前端或执行全流程。核心逻辑位于 [`main`](../../run_rag_system.py#L402-L480)，最终委托 `RAGSystemRunner` 来执行任务。
+- `RAGSystemRunner.__init__` 会在 [`run_rag_system.py`](../../run_rag_system.py#L45-L71) 中检查并补齐 `data/raw`、`data/processed` 等目录，保证项目结构与配置一致。
 
 ```python
 # run_rag_system.py
@@ -18,7 +19,9 @@ class RAGSystemRunner:
 ## 管线阶段
 | 阶段 | 关联方法 | 功能要点 |
 | ---- | -------- | -------- |
-| 环境检测 | [`check_environment`](../../run_rag_system.py#L65-L115) | 校验 Python 版本、关键依赖与 Qdrant 服务是否就绪，失败会中止后续步骤。 |
+
+| 环境检测 | [`check_environment`](../../run_rag_system.py#L72-L115) | 校验 Python 版本、关键依赖与 Qdrant 服务是否就绪，失败会中止后续步骤。 |
+
 | 数据采集 | [`collect_data`](../../run_rag_system.py#L117-L161) | 通过 `MultiSourceCollector` 异步抓取 ArXiv、Hugging Face Papers 与 RSS 博客，并在采集完成后将 `Document` 序列保存到 `data/raw/raw_collected_data.json`。 |
 | 文本处理 | [`process_data`](../../run_rag_system.py#L163-L221) | 使用 `TextProcessor` 调用分层切分器、向量化器以及多表示索引器，将原始文档转换成可写入向量库的索引条目。 |
 | 知识库构建 | [`build_knowledge_base`](../../run_rag_system.py#L223-L276) | 复用 `VectorDatabaseManager` 的 `build_knowledge_base`，若调用方已传入内存中的 chunks 列表，会跳过二次读盘。 |
@@ -45,7 +48,9 @@ async def run_full_pipeline(self, args):
         self.launch_frontend(args.port)
 ```
 
-- 该方法位于 [`run_rag_system.py`](../../run_rag_system.py#L403-L468)，通过事件循环顺序执行异步阶段并记录总耗时。
+
+- 该方法位于 [`run_rag_system.py`](../../run_rag_system.py#L359-L401)，通过事件循环顺序执行异步阶段并记录总耗时。
+
 - `--quick`、`--frontend-only` 等参数会在 `main()` 中预先设置 `skip_*` 标记，使 `run_full_pipeline` 能够复用统一的流程控制代码。
 
 ## 配置依赖
