@@ -21,7 +21,6 @@ class RAGSystemRunner:
 | ---- | -------- | -------- |
 
 | 环境检测 | [`check_environment`](../../run_rag_system.py#L72-L115) | 校验 Python 版本、关键依赖与 Qdrant 服务是否就绪，失败会中止后续步骤。 |
-
 | 数据采集 | [`collect_data`](../../run_rag_system.py#L117-L161) | 通过 `MultiSourceCollector` 异步抓取 ArXiv、Hugging Face Papers 与 RSS 博客，并在采集完成后将 `Document` 序列保存到 `data/raw/raw_collected_data.json`。 |
 | 文本处理 | [`process_data`](../../run_rag_system.py#L163-L221) | 使用 `TextProcessor` 调用分层切分器、向量化器以及多表示索引器，将原始文档转换成可写入向量库的索引条目。 |
 | 知识库构建 | [`build_knowledge_base`](../../run_rag_system.py#L223-L276) | 复用 `VectorDatabaseManager` 的 `build_knowledge_base`，若调用方已传入内存中的 chunks 列表，会跳过二次读盘。 |
