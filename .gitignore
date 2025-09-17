@@ -2,3 +2,4 @@
 /.vscode
 .env
 CLAUDE.md
+.DS_Store
