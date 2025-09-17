@@ -48,6 +48,12 @@ streamlit run app.py
 # No formal test framework configured
 # Testing is done through run_rag_system.py and app.py
 # Evaluation pipeline: python -c "from src.evaluation.evaluation_pipeline import EvaluationPipeline; EvaluationPipeline().run_evaluation()"
+
+# Code compilation check
+python -m compileall src
+
+# Qdrant vector database (run in background, required for system operation)
+./qdrant --storage-path ./storage
 ```
 
 ## High-Level Architecture
@@ -100,10 +106,14 @@ The system follows a 7-layer architecture:
 ## Important Implementation Notes
 
 - **Chinese Language Focus**: Most UI text, prompts, and documentation are in Chinese
-- **Environment Variables**: System heavily relies on `.env` configuration file
-- **Qdrant Dependency**: Requires running Qdrant vector database instance
+- **Environment Variables**: System heavily relies on `.env` configuration file (auto-loaded by `configs/config.py`)
+- **Qdrant Dependency**: Requires running Qdrant vector database instance before system operations
 - **HuggingFace Integration**: Uses HF Hub for model downloads, requires token for some models
 - **Modular Design**: Each component can operate independently via `src/generation/ultimate_rag_system.py`
+- **Model Caching**: All models are cached via `src/optimization/model_registry.py` to avoid duplicate loading
+- **Feature Toggles**: Most advanced features can be disabled via environment variables (e.g., `ENABLE_AGENTIC_RAG`, `ENABLE_KNOWLEDGE_GRAPH`)
+- **AutoDL Support**: `setup.py` provides interactive configuration optimized for AutoDL cloud environments
+- **Async Architecture**: Data collection uses async/await patterns with `aiohttp` for improved performance
 
 ## Data Flow
 
@@ -120,8 +130,30 @@ The system follows a 7-layer architecture:
 
 ```
 STORAGE_ROOT/
-├── data/           # Raw and processed documents
-├── models/         # HuggingFace model cache
-├── logs/           # System logs
+├── data/
+│   ├── raw/        # Raw collected documents
+│   └── processed/  # Processed text chunks
+├── models/         # HuggingFace model cache (controlled by HF_HOME)
+├── logs/           # System logs with rotation
+├── evaluation/     # Evaluation results and golden test sets
+├── feedback/       # User feedback database
+├── knowledge_graph/ # SQLite KG database
 └── qdrant_storage/ # Vector database storage
+```
+
+## Command Line Arguments
+
+The `run_rag_system.py` script supports several arguments for flexible execution:
+
+```bash
+python run_rag_system.py                     # Full pipeline execution
+python run_rag_system.py --quick             # Skip data collection, use existing data
+python run_rag_system.py --frontend-only     # Launch only Streamlit interface
+python run_rag_system.py --skip-check        # Skip dependency and Qdrant checks
+python run_rag_system.py --skip-collect      # Skip data collection phase
+python run_rag_system.py --skip-process      # Skip text processing phase
+python run_rag_system.py --skip-build        # Skip vector database building
+python run_rag_system.py --test              # Run regression tests after building
+python run_rag_system.py --no-frontend       # Run offline stages only
+python run_rag_system.py --port 8501         # Specify Streamlit port
 ```
