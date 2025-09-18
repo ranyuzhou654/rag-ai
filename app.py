@@ -21,6 +21,7 @@ try:
     from src.generation.rag_generator import RAGSystem
     from src.retrieval.vector_database import VectorDatabaseManager
     from src.retrieval.reranker import AdvancedReranker
+    from src.frontend.discovery_interface import DiscoveryInterface
 except ImportError as e:
     st.error(f"导入模块失败: {e}")
     st.stop()
@@ -273,8 +274,17 @@ def main():
         st.session_state.db_manager = db_manager
         st.session_state.reranker_available = reranker_available
         st.session_state.chat_history = []
+        
+        # 初始化内容发现界面
+        discovery_interface = DiscoveryInterface()
+        discovery_interface.initialize_components(
+            vector_db_manager=db_manager,
+            rag_system=rag_system,
+            llm_generator=rag_system.llm_generator if hasattr(rag_system, 'llm_generator') else None
+        )
+        st.session_state.discovery_interface = discovery_interface
     
-    tab1, tab2, tab3 = st.tabs(["💬 智能问答", "📊 知识库概览", "ℹ️ 系统信息"])
+    tab1, tab2, tab3, tab4 = st.tabs(["💬 智能问答", "🔍 内容发现", "📊 知识库概览", "ℹ️ 系统信息"])
     
     with tab1:
         st.markdown("### 💬 与AI助手对话")
@@ -323,6 +333,9 @@ def main():
                         loop.close()
     
     with tab2:
+        st.session_state.discovery_interface.render_discovery_tab()
+    
+    with tab3:
         render_knowledge_base_stats(st.session_state.db_manager)
         st.markdown("### 💡 示例查询")
         example_queries = ["什么是Transformer架构的核心创新？", "如何提高大语言模型的效率？", "RAG技术有什么优势和局限性？"]
@@ -331,11 +344,12 @@ def main():
                 st.session_state.user_input = query
                 st.rerun()
     
-    with tab3:
+    with tab4:
         st.markdown("### ℹ️ 系统架构信息")
         system_info = {
             "🔍 检索模型": "BAAI/bge-m3", "🧠 生成模型": "Qwen2-7B-Instruct", "🗄️ 向量数据库": "Qdrant",
             "🔄 重排序器": "BAAI/bge-reranker-base + MMR", "🌐 前端框架": "Streamlit",
+            "📊 内容分析": "TF-IDF + LDA主题建模", "🎯 智能发现": "主题感知RAG + 交互式大纲"
         }
         for component, description in system_info.items():
             st.markdown(f"**{component}**: {description}")
