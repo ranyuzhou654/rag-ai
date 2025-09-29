@@ -368,4 +368,208 @@ class MetricsCollector:
         """Record an error"""
         self.errors.labels(error_type=error_type, component=component).inc()
         
-        error_entry = {\n            'timestamp': datetime.now().isoformat(),\n            'component': component,\n            'error_type': error_type,\n            'error_message': error_message\n        }\n        self.error_log.append(error_entry)\n        \n        logger.error(f\"❌ {component}.{error_type}: {error_message}\")\n    \n    def update_active_connections(self, count: int):\n        \"\"\"Update active connections count\"\"\"\n        self.active_connections.set(count)\n    \n    def get_current_metrics(self) -> Dict[str, Any]:\n        \"\"\"Get current system metrics\"\"\"\n        if not self.metrics_history:\n            return {}\n        \n        latest = self.metrics_history[-1]\n        \n        # Calculate additional metrics\n        avg_latency = sum(self.query_latencies) / max(len(self.query_latencies), 1)\n        error_rate = len([e for e in self.error_log \n                         if datetime.fromisoformat(e['timestamp']) > datetime.now() - timedelta(minutes=5)])\n        \n        return {\n            'current_metrics': latest.to_dict(),\n            'average_latency_ms': avg_latency * 1000,\n            'error_rate_5min': error_rate,\n            'total_queries': len(self.query_latencies),\n            'cache_performance': self._calculate_cache_performance(),\n            'system_health': self._assess_system_health()\n        }\n    \n    def _calculate_cache_performance(self) -> Dict[str, float]:\n        \"\"\"Calculate cache performance metrics\"\"\"\n        # This would be populated by cache system\n        return {\n            'memory_hit_rate': 0.85,\n            'redis_hit_rate': 0.72,\n            'file_hit_rate': 0.45\n        }\n    \n    def _assess_system_health(self) -> str:\n        \"\"\"Assess overall system health\"\"\"\n        if not self.metrics_history:\n            return \"unknown\"\n        \n        latest = self.metrics_history[-1]\n        \n        # Simple health assessment\n        if latest.cpu_usage_percent > 90 or latest.memory_usage_mb > 8000:\n            return \"critical\"\n        elif latest.cpu_usage_percent > 70 or latest.memory_usage_mb > 6000:\n            return \"warning\"\n        else:\n            return \"healthy\"\n    \n    def get_metrics_summary(self, hours: int = 24) -> Dict[str, Any]:\n        \"\"\"Get metrics summary for the specified time period\"\"\"\n        cutoff_time = datetime.now() - timedelta(hours=hours)\n        \n        recent_metrics = [\n            m for m in self.metrics_history \n            if m.timestamp > cutoff_time\n        ]\n        \n        if not recent_metrics:\n            return {}\n        \n        return {\n            'time_period_hours': hours,\n            'total_data_points': len(recent_metrics),\n            'average_cpu_usage': sum(m.cpu_usage_percent for m in recent_metrics) / len(recent_metrics),\n            'average_memory_usage_mb': sum(m.memory_usage_mb for m in recent_metrics) / len(recent_metrics),\n            'peak_cpu_usage': max(m.cpu_usage_percent for m in recent_metrics),\n            'peak_memory_usage_mb': max(m.memory_usage_mb for m in recent_metrics),\n            'total_errors': len([e for e in self.error_log \n                               if datetime.fromisoformat(e['timestamp']) > cutoff_time]),\n            'health_status': self._assess_system_health()\n        }\n    \n    def export_metrics(self) -> str:\n        \"\"\"Export metrics in Prometheus format\"\"\"\n        return generate_latest(self.registry).decode('utf-8')\n    \n    def get_component_stats(self, component: str) -> Dict[str, Any]:\n        \"\"\"Get statistics for a specific component\"\"\"\n        return self.component_stats.get(component, {})\n    \n    def update_component_stats(self, component: str, stats: Dict[str, Any]):\n        \"\"\"Update statistics for a component\"\"\"\n        self.component_stats[component].update(stats)\n    \n    def save_metrics_to_file(self, file_path: Path):\n        \"\"\"Save current metrics to file\"\"\"\n        try:\n            metrics_data = {\n                'timestamp': datetime.now().isoformat(),\n                'current_metrics': self.get_current_metrics(),\n                'summary_24h': self.get_metrics_summary(24),\n                'component_stats': dict(self.component_stats),\n                'recent_errors': list(self.error_log)[-50:]  # Last 50 errors\n            }\n            \n            with open(file_path, 'w') as f:\n                json.dump(metrics_data, f, indent=2, default=str)\n            \n            logger.info(f\"💾 Metrics saved to {file_path}\")\n            \n        except Exception as e:\n            logger.error(f\"❌ Error saving metrics: {e}\")\n\n\n# Global metrics collector instance\n_metrics_collector: Optional[MetricsCollector] = None\n\n\ndef get_metrics_collector() -> Optional[MetricsCollector]:\n    \"\"\"Get the global metrics collector instance\"\"\"\n    return _metrics_collector\n\n\ndef initialize_metrics(config: Dict[str, Any]) -> MetricsCollector:\n    \"\"\"Initialize the global metrics collector\"\"\"\n    global _metrics_collector\n    \n    if _metrics_collector is None:\n        _metrics_collector = MetricsCollector(config)\n        _metrics_collector.start_collection()\n    \n    return _metrics_collector\n\n\ndef shutdown_metrics():\n    \"\"\"Shutdown the global metrics collector\"\"\"\n    global _metrics_collector\n    \n    if _metrics_collector:\n        _metrics_collector.stop_collection()\n        _metrics_collector = None\n\n\n# Convenience decorators\ndef monitor_performance(component: str, operation: str):\n    \"\"\"Decorator for monitoring function performance\"\"\"\n    def decorator(func):\n        def wrapper(*args, **kwargs):\n            collector = get_metrics_collector()\n            if collector:\n                with collector.measure_request(component, operation):\n                    return func(*args, **kwargs)\n            else:\n                return func(*args, **kwargs)\n        return wrapper\n    return decorator\n\n\ndef monitor_async_performance(component: str, operation: str):\n    \"\"\"Decorator for monitoring async function performance\"\"\"\n    def decorator(func):\n        async def wrapper(*args, **kwargs):\n            collector = get_metrics_collector()\n            if collector:\n                with collector.measure_request(component, operation):\n                    return await func(*args, **kwargs)\n            else:\n                return await func(*args, **kwargs)\n        return wrapper\n    return decorator\n\n\n# Example usage and testing\nif __name__ == \"__main__\":\n    # Test configuration\n    config = {\n        'metrics_port': 8001,\n        'collection_interval': 5,\n        'history_size': 100\n    }\n    \n    # Initialize metrics\n    collector = initialize_metrics(config)\n    \n    # Simulate some operations\n    import random\n    \n    for i in range(10):\n        with collector.measure_request(\"test_endpoint\", \"GET\"):\n            time.sleep(random.uniform(0.1, 0.5))\n        \n        collector.record_cache_hit(\"memory\")\n        if random.random() > 0.7:\n            collector.record_cache_miss(\"redis\")\n    \n    # Print current metrics\n    print(\"Current metrics:\")\n    print(json.dumps(collector.get_current_metrics(), indent=2))\n    \n    # Save metrics\n    collector.save_metrics_to_file(Path(\"test_metrics.json\"))\n    \n    # Cleanup\n    shutdown_metrics()"
+        error_entry = {
+            'timestamp': datetime.now().isoformat(),
+            'component': component,
+            'error_type': error_type,
+            'error_message': error_message
+        }
+        self.error_log.append(error_entry)
+        
+        logger.error(f"❌ {component}.{error_type}: {error_message}")
+    
+    def update_active_connections(self, count: int):
+        """Update active connections count"""
+        self.active_connections.set(count)
+    
+    def get_current_metrics(self) -> Dict[str, Any]:
+        """Get current system metrics"""
+        if not self.metrics_history:
+            return {}
+        
+        latest = self.metrics_history[-1]
+        
+        # Calculate additional metrics
+        avg_latency = sum(self.query_latencies) / max(len(self.query_latencies), 1)
+        error_rate = len([e for e in self.error_log 
+                         if datetime.fromisoformat(e['timestamp']) > datetime.now() - timedelta(minutes=5)])
+        
+        return {
+            'current_metrics': latest.to_dict(),
+            'average_latency_ms': avg_latency * 1000,
+            'error_rate_5min': error_rate,
+            'total_queries': len(self.query_latencies),
+            'cache_performance': self._calculate_cache_performance(),
+            'system_health': self._assess_system_health()
+        }
+    
+    def _calculate_cache_performance(self) -> Dict[str, float]:
+        """Calculate cache performance metrics"""
+        # This would be populated by cache system
+        return {
+            'memory_hit_rate': 0.85,
+            'redis_hit_rate': 0.72,
+            'file_hit_rate': 0.45
+        }
+    
+    def _assess_system_health(self) -> str:
+        """Assess overall system health"""
+        if not self.metrics_history:
+            return "unknown"
+        
+        latest = self.metrics_history[-1]
+        
+        # Simple health assessment
+        if latest.cpu_usage_percent > 90 or latest.memory_usage_mb > 8000:
+            return "critical"
+        elif latest.cpu_usage_percent > 70 or latest.memory_usage_mb > 6000:
+            return "warning"
+        else:
+            return "healthy"
+    
+    def get_metrics_summary(self, hours: int = 24) -> Dict[str, Any]:
+        """Get metrics summary for the specified time period"""
+        cutoff_time = datetime.now() - timedelta(hours=hours)
+        
+        recent_metrics = [
+            m for m in self.metrics_history 
+            if m.timestamp > cutoff_time
+        ]
+        
+        if not recent_metrics:
+            return {}
+        
+        return {
+            'time_period_hours': hours,
+            'total_data_points': len(recent_metrics),
+            'average_cpu_usage': sum(m.cpu_usage_percent for m in recent_metrics) / len(recent_metrics),
+            'average_memory_usage_mb': sum(m.memory_usage_mb for m in recent_metrics) / len(recent_metrics),
+            'peak_cpu_usage': max(m.cpu_usage_percent for m in recent_metrics),
+            'peak_memory_usage_mb': max(m.memory_usage_mb for m in recent_metrics),
+            'total_errors': len([e for e in self.error_log 
+                               if datetime.fromisoformat(e['timestamp']) > cutoff_time]),
+            'health_status': self._assess_system_health()
+        }
+    
+    def export_metrics(self) -> str:
+        """Export metrics in Prometheus format"""
+        return generate_latest(self.registry).decode('utf-8')
+    
+    def get_component_stats(self, component: str) -> Dict[str, Any]:
+        """Get statistics for a specific component"""
+        return self.component_stats.get(component, {})
+    
+    def update_component_stats(self, component: str, stats: Dict[str, Any]):
+        """Update statistics for a component"""
+        self.component_stats[component].update(stats)
+    
+    def save_metrics_to_file(self, file_path: Path):
+        """Save current metrics to file"""
+        try:
+            metrics_data = {
+                'timestamp': datetime.now().isoformat(),
+                'current_metrics': self.get_current_metrics(),
+                'summary_24h': self.get_metrics_summary(24),
+                'component_stats': dict(self.component_stats),
+                'recent_errors': list(self.error_log)[-50:]  # Last 50 errors
+            }
+            
+            with open(file_path, 'w') as f:
+                json.dump(metrics_data, f, indent=2, default=str)
+            
+            logger.info(f"💾 Metrics saved to {file_path}")
+            
+        except Exception as e:
+            logger.error(f"❌ Error saving metrics: {e}")
+
+
+# Global metrics collector instance
+_metrics_collector: Optional[MetricsCollector] = None
+
+
+def get_metrics_collector() -> Optional[MetricsCollector]:
+    """Get the global metrics collector instance"""
+    return _metrics_collector
+
+
+def initialize_metrics(config: Dict[str, Any]) -> MetricsCollector:
+    """Initialize the global metrics collector"""
+    global _metrics_collector
+    
+    if _metrics_collector is None:
+        _metrics_collector = MetricsCollector(config)
+        _metrics_collector.start_collection()
+    
+    return _metrics_collector
+
+
+def shutdown_metrics():
+    """Shutdown the global metrics collector"""
+    global _metrics_collector
+    
+    if _metrics_collector:
+        _metrics_collector.stop_collection()
+        _metrics_collector = None
+
+
+# Convenience decorators
+def monitor_performance(component: str, operation: str):
+    """Decorator for monitoring function performance"""
+    def decorator(func):
+        def wrapper(*args, **kwargs):
+            collector = get_metrics_collector()
+            if collector:
+                with collector.measure_request(component, operation):
+                    return func(*args, **kwargs)
+            else:
+                return func(*args, **kwargs)
+        return wrapper
+    return decorator
+
+
+def monitor_async_performance(component: str, operation: str):
+    """Decorator for monitoring async function performance"""
+    def decorator(func):
+        async def wrapper(*args, **kwargs):
+            collector = get_metrics_collector()
+            if collector:
+                with collector.measure_request(component, operation):
+                    return await func(*args, **kwargs)
+            else:
+                return await func(*args, **kwargs)
+        return wrapper
+    return decorator
+
+
+# Example usage and testing
+if __name__ == "__main__":
+    # Test configuration
+    config = {
+        'metrics_port': 8001,
+        'collection_interval': 5,
+        'history_size': 100
+    }
+    
+    # Initialize metrics
+    collector = initialize_metrics(config)
+    
+    # Simulate some operations
+    import random
+    
+    for i in range(10):
+        with collector.measure_request("test_endpoint", "GET"):
+            time.sleep(random.uniform(0.1, 0.5))
+        
+        collector.record_cache_hit("memory")
+        if random.random() > 0.7:
+            collector.record_cache_miss("redis")
+    
+    # Print current metrics
+    print("Current metrics:")
+    print(json.dumps(collector.get_current_metrics(), indent=2))
+    
+    # Save metrics
+    collector.save_metrics_to_file(Path("test_metrics.json"))
+    
+    # Cleanup
+    shutdown_metrics()
