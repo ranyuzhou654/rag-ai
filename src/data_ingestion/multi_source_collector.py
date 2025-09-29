@@ -5,13 +5,14 @@ import feedparser
 import xml.etree.ElementTree as ET
 from pathlib import Path
 from datetime import datetime, timedelta
-from typing import List, Dict, Optional, Set
+from typing import List, Dict, Optional, Set, Union
 from dataclasses import dataclass, field
 from huggingface_hub import HfApi
 from loguru import logger
 import pymupdf4llm
 import fitz  # PyMuPDF
 import json
+import hashlib
 
 @dataclass
 class Document:
@@ -23,22 +24,47 @@ class Document:
     url: Optional[str] = None
     published_date: Optional[datetime] = None
     metadata: Dict = field(default_factory=dict)
+    
+    # 新增字段用于元数据优先策略
+    abstract: Optional[str] = None  # 论文摘要或简短描述
+    authors: Optional[List[str]] = None  # 作者列表
+    keywords: Optional[List[str]] = None  # 关键词
+    doi: Optional[str] = None  # DOI标识符
+    arxiv_id: Optional[str] = None  # ArXiv ID
+    pdf_url: Optional[str] = None  # PDF下载链接
+    is_full_text: bool = False  # 标识是否已获取全文
+    
+    # 引用信息
+    citation_info: Dict = field(default_factory=dict)  # 引用格式信息
 
 
 class MultiSourceCollector:
     """
-    企业级多数据源收集器
+    企业级多数据源收集器 - 元数据优先策略
     - 支持ArXiv, Hugging Face Papers, 主流AI博客
+    - 采用"元数据+按需全文"策略，优化存储和性能
     - 支持异步IO，提升采集效率
     - 内置缓存，避免重复处理
+    - 支持引用信息生成和来源追溯
     """
 
-    def __init__(self, data_dir: Path):
+    def __init__(self, data_dir: Path, metadata_only: bool = True):
         self.data_dir = data_dir
         self.raw_data_path = self.data_dir / "raw_collected_data.json"
+        self.metadata_path = self.data_dir / "metadata_index.json"  # 元数据索引
         self.pdf_dir = self.data_dir / "pdfs"
-        self.pdf_dir.mkdir(exist_ok=True)
+        self.pdf_cache_dir = self.data_dir / "pdf_cache"  # PDF缓存目录
+        
+        # 创建必要目录
+        for dir_path in [self.pdf_dir, self.pdf_cache_dir]:
+            dir_path.mkdir(exist_ok=True)
+            
         self.processed_ids: Set[str] = self._load_processed_ids()
+        self.metadata_only = metadata_only  # 控制是否只收集元数据
+        
+        # 缓存管理
+        self.pdf_download_queue = asyncio.Queue()  # PDF下载队列
+        self.metadata_cache = {}  # 元数据缓存
 
         # AI博客RSS源
         self.blog_feeds = {
@@ -262,4 +288,80 @@ class MultiSourceCollector:
         except Exception as e:
             logger.error(f"Failed to parse blog feed {name}: {e}")
             return []
+    
+    # --- 新增方法：批量预热缓存 ---
+    async def preload_popular_papers(self, paper_ids: List[str]):
+        """预热加载热门论文的全文"""
+        logger.info(f"🔥 Preloading {len(paper_ids)} popular papers...")
+        
+        semaphore = asyncio.Semaphore(3)  # 限制并发数
+        tasks = [self._preload_single_paper(paper_id, semaphore) for paper_id in paper_ids]
+        
+        await asyncio.gather(*tasks, return_exceptions=True)
+        logger.success("✅ Popular papers preloading completed")
+    
+    async def _preload_single_paper(self, paper_id: str, semaphore: asyncio.Semaphore):
+        """预加载单篇论文"""
+        async with semaphore:
+            full_text = await self.fetch_full_text_on_demand(paper_id)
+            if full_text:
+                logger.info(f"✅ Preloaded: {paper_id}")
+            else:
+                logger.warning(f"⚠️ Failed to preload: {paper_id}")
+    
+    # --- 新增方法：增量更新 ---
+    async def daily_incremental_update(self) -> List[Document]:
+        """每日增量更新元数据"""
+        logger.info("🔄 Starting daily incremental metadata update...")
+        
+        # 只获取最近1天的数据
+        new_docs = await self.collect_metadata_only(days_back=1)
+        
+        # 过滤出真正的新文档
+        truly_new_docs = [doc for doc in new_docs if doc.id not in self.processed_ids]
+        
+        if truly_new_docs:
+            # 更新已处理ID集合
+            self.processed_ids.update(doc.id for doc in truly_new_docs)
+            
+            # 保存新数据
+            self._append_to_metadata_index(truly_new_docs)
+            logger.success(f"✅ Daily update completed: {len(truly_new_docs)} new documents")
+        else:
+            logger.info("💯 No new documents found in daily update")
+        
+        return truly_new_docs
+    
+    def _append_to_metadata_index(self, new_docs: List[Document]):
+        """将新文档附加到元数据索引"""
+        # 加载现有索引
+        metadata_index = {}
+        if self.metadata_path.exists():
+            try:
+                with open(self.metadata_path, 'r', encoding='utf-8') as f:
+                    metadata_index = json.load(f)
+            except Exception as e:
+                logger.error(f"❌ Error loading existing metadata: {e}")
+        
+        # 添加新文档
+        for doc in new_docs:
+            metadata_index[doc.id] = {
+                'title': doc.title,
+                'abstract': doc.abstract,
+                'authors': doc.authors,
+                'keywords': doc.keywords,
+                'url': doc.url,
+                'pdf_url': doc.pdf_url,
+                'doi': doc.doi,
+                'arxiv_id': doc.arxiv_id,
+                'published_date': doc.published_date.isoformat() if doc.published_date else None,
+                'source': doc.source,
+                'citation_info': doc.citation_info,
+                'is_full_text': doc.is_full_text
+            }
+        
+        # 保存更新后的索引
+        with open(self.metadata_path, "w", encoding="utf-8") as f:
+            json.dump(metadata_index, f, ensure_ascii=False, indent=2)
+        logger.info(f"💾 Metadata index updated with {len(new_docs)} new entries")
 

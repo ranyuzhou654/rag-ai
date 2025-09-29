@@ -1,20 +1,34 @@
 # src/retrieval/vector_database.py
-from typing import List, Dict, Optional, Tuple, Any
+from typing import List, Dict, Optional, Tuple, Any, Union
 import numpy as np
 from dataclasses import asdict
 from qdrant_client import QdrantClient
 from qdrant_client.http import models
-from qdrant_client.http.models import Distance, VectorParams, PointStruct
+from qdrant_client.http.models import (
+    Distance, VectorParams, PointStruct, Filter, 
+    FieldCondition, Match, Range, GeoBoundingBox,
+    SearchRequest, RecommendRequest, ScrollRequest
+)
 from loguru import logger
 import uuid
 from pathlib import Path
 import json
 import time
+from datetime import datetime, timedelta
+import re
+from rank_bm25 import BM25Okapi
+from collections import defaultdict
+import hashlib
 
 class QdrantVectorDB:
     """
-    Qdrant向量数据库管理器
-    核心功能：高效的向量检索 + 混合搜索能力
+    Qdrant向量数据库管理器 - 企业级版本
+    核心功能：
+    - 高效的向量检索 + 混合搜索能力
+    - 支持语义检索 + 关键词匹配 + 元数据过滤
+    - 支持学术论文特定的过滤（作者、年份、期刊、分类等）
+    - 支持分布式部署和水平扩展
+    - 内置性能监控和统计分析
     """
     
     def __init__(
@@ -23,12 +37,34 @@ class QdrantVectorDB:
         port: int = 6333,
         collection_name: str = "ai_papers",
         vector_size: int = 1024,  # BGE-M3的向量维度
-        timeout: int = 60 # 新增超时参数
+        timeout: int = 60,
+        enable_hybrid_search: bool = True,
+        bm25_weight: float = 0.3,  # BM25权重
+        vector_weight: float = 0.7  # 向量相似度权重
     ):
         self.host = host
         self.port = port
         self.collection_name = collection_name
         self.vector_size = vector_size
+        self.enable_hybrid_search = enable_hybrid_search
+        self.bm25_weight = bm25_weight
+        self.vector_weight = vector_weight
+        
+        # 混合搜索组件
+        self.bm25_index = None
+        self.document_texts = []  # 用于BM25索引
+        self.doc_id_mapping = {}  # ID映射
+        
+        # 性能统计
+        self.search_stats = {
+            'total_searches': 0,
+            'semantic_searches': 0,
+            'keyword_searches': 0,
+            'hybrid_searches': 0,
+            'filtered_searches': 0,
+            'avg_search_time': 0.0,
+            'cache_hits': 0
+        }
         
         # 初始化客户端
         try:
@@ -61,18 +97,25 @@ class QdrantVectorDB:
                     ),
                     # 优化配置
                     optimizers_config=models.OptimizersConfig(
-                        default_segment_number=2,  # 分段数
-                        max_segment_size=20000,    # 最大分段大小
-                        memmap_threshold=20000,    # 内存映射阈值
-                        indexing_threshold=10000   # 索引阈值
+                        default_segment_number=4,  # 增加分段数以支持并发
+                        max_segment_size=50000,    # 增大分段以提升性能
+                        memmap_threshold=50000,    # 更高的内存映射阈值
+                        indexing_threshold=20000,  # 更高的索引阈值
+                        flush_interval_sec=30,     # 刷新间隔
+                        max_optimization_threads=2 # 优化线程数
                     ),
-                    # HNSW索引参数优化
+                    # HNSW索引参数优化（为学术论文检索调优）
                     hnsw_config=models.HnswConfig(
-                        m=16,                      # 每层连接数
-                        ef_construct=200,          # 构建时搜索宽度
-                        full_scan_threshold=10000  # 全扫描阈值
+                        m=32,                      # 增加连接数提升召回率
+                        ef_construct=400,          # 更高的构建搜索宽度
+                        full_scan_threshold=50000, # 更高的全扫描阈值
+                        max_indexing_threads=4,    # 索引线程数
+                        on_disk=False              # 内存索引（更快）
                     )
                 )
+                
+                # 创建索引以支持高效过滤
+                self._create_payload_indexes()
                 
                 logger.info("✅ 集合创建成功")
             else:
@@ -80,6 +123,13 @@ class QdrantVectorDB:
                 info = self.client.get_collection(self.collection_name)
                 logger.info(f"使用现有集合: {self.collection_name}")
                 logger.info(f"当前向量数量: {info.points_count}")
+                
+                # 确保索引存在
+                self._create_payload_indexes()
+                
+                # 如果启用混合搜索，加载现有文档用于BM25
+                if self.enable_hybrid_search:
+                    self._load_existing_documents_for_bm25()
 
         except Exception as e:
             logger.error(f"确保集合存在失败: {e}")
@@ -154,6 +204,10 @@ class QdrantVectorDB:
         logger.info(f"✅ 向量添加完成!")
         logger.info(f"   成功添加: {total_added}/{len(chunks)} ({success_rate:.1f}%)")
         logger.info(f"   数据库总向量数: {collection_info.points_count}")
+        
+        # 更新BM25索引
+        if success_rate > 90 and self.enable_hybrid_search:
+            self.update_bm25_index(chunks)
         
         return success_rate > 90  # 成功率大于90%认为成功
     
@@ -285,24 +339,349 @@ class QdrantVectorDB:
         
         return models.Filter(must=conditions) if conditions else None
     
+    def advanced_academic_search(
+        self, 
+        query_vector: np.ndarray, 
+        query_text: str,
+        authors: Optional[List[str]] = None,
+        year_range: Optional[Tuple[int, int]] = None,
+        sources: Optional[List[str]] = None,
+        categories: Optional[List[str]] = None,
+        has_full_text: Optional[bool] = None,
+        language: Optional[str] = None,
+        top_k: int = 10
+    ) -> List[Dict]:
+        """
+        高级学术论文搜索，支持多维度过滤
+        
+        Args:
+            query_vector: 查询向量
+            query_text: 查询文本
+            authors: 作者名单
+            year_range: 年份范围 (start_year, end_year)
+            sources: 数据源列表 ['arxiv', 'huggingface', 'blogs']
+            categories: ArXiv分类列表
+            has_full_text: 是否必须有全文
+            language: 语言过滤
+            top_k: 返回结果数量
+        """
+        start_time = time.time()
+        self.search_stats['total_searches'] += 1
+        self.search_stats['filtered_searches'] += 1
+        
+        try:
+            # 构建过滤条件
+            filter_conditions = []
+            
+            # 作者过滤
+            if authors:
+                author_conditions = []
+                for author in authors:
+                    author_conditions.append(
+                        models.FieldCondition(
+                            key="authors",
+                            match=models.MatchValue(value=author)
+                        )
+                    )
+                filter_conditions.append(models.Filter(should=author_conditions))
+            
+            # 年份过滤
+            if year_range:
+                start_year, end_year = year_range
+                filter_conditions.append(
+                    models.FieldCondition(
+                        key="year",
+                        range=models.Range(
+                            gte=start_year,
+                            lte=end_year
+                        )
+                    )
+                )
+            
+            # 数据源过滤
+            if sources:
+                source_conditions = []
+                for source in sources:
+                    source_conditions.append(
+                        models.FieldCondition(
+                            key="source",
+                            match=models.MatchValue(value=source)
+                        )
+                    )
+                filter_conditions.append(models.Filter(should=source_conditions))
+            
+            # 分类过滤
+            if categories:
+                category_conditions = []
+                for category in categories:
+                    category_conditions.append(
+                        models.FieldCondition(
+                            key="categories",
+                            match=models.MatchValue(value=category)
+                        )
+                    )
+                filter_conditions.append(models.Filter(should=category_conditions))
+            
+            # 全文过滤
+            if has_full_text is not None:
+                filter_conditions.append(
+                    models.FieldCondition(
+                        key="has_full_text",
+                        match=models.MatchValue(value=has_full_text)
+                    )
+                )
+            
+            # 语言过滤
+            if language:
+                filter_conditions.append(
+                    models.FieldCondition(
+                        key="language",
+                        match=models.MatchValue(value=language)
+                    )
+                )
+            
+            # 组合过滤条件
+            search_filter = models.Filter(must=filter_conditions) if filter_conditions else None
+            
+            # 执行语义搜索
+            search_result = self.client.search(
+                collection_name=self.collection_name,
+                query_vector=query_vector,
+                query_filter=search_filter,
+                limit=top_k * 2,  # 获取更多结果用于混合重排
+                with_payload=True,
+                with_vectors=False
+            )
+            
+            # 如果启用混合搜索，结合BM25结果
+            if self.enable_hybrid_search and self.bm25_index and query_text:
+                # BM25搜索
+                query_tokens = query_text.lower().split()
+                bm25_scores = self.bm25_index.get_scores(query_tokens)
+                
+                # 重新计算混合得分
+                results = []
+                for point in search_result:
+                    vector_score = point.score
+                    
+                    # 查找BM25得分
+                    bm25_score = 0.0
+                    doc_id = str(point.id)
+                    for bm25_idx, mapped_id in self.doc_id_mapping.items():
+                        if mapped_id == doc_id and bm25_idx < len(bm25_scores):
+                            bm25_score = bm25_scores[bm25_idx]
+                            break
+                    
+                    # 归一化BM25得分
+                    normalized_bm25 = min(bm25_score / (max(bm25_scores) + 1e-8), 1.0)
+                    
+                    # 计算混合得分
+                    hybrid_score = (
+                        self.vector_weight * vector_score + 
+                        self.bm25_weight * normalized_bm25
+                    )
+                    
+                    result = {
+                        'id': point.id,
+                        'content': point.payload.get('content', ''),
+                        'metadata': point.payload.get('metadata', {}),
+                        'scores': {
+                            'vector_score': float(vector_score),
+                            'bm25_score': float(normalized_bm25),
+                            'hybrid_score': float(hybrid_score)
+                        }
+                    }
+                    results.append(result)
+                
+                # 按混合得分排序
+                results.sort(key=lambda x: x['scores']['hybrid_score'], reverse=True)
+                results = results[:top_k]
+            else:
+                # 纯语义搜索结果
+                results = []
+                for point in search_result[:top_k]:
+                    result = {
+                        'id': point.id,
+                        'content': point.payload.get('content', ''),
+                        'metadata': point.payload.get('metadata', {}),
+                        'scores': {
+                            'vector_score': float(point.score),
+                            'hybrid_score': float(point.score)
+                        }
+                    }
+                    results.append(result)
+            
+            search_time = time.time() - start_time
+            self.search_stats['avg_search_time'] = (
+                (self.search_stats['avg_search_time'] * (self.search_stats['total_searches'] - 1) + search_time) /
+                self.search_stats['total_searches']
+            )
+            
+            logger.info(
+                f"✅ 高级学术搜索完成: {len(results)}个结果, "
+                f"过滤条件: {len(filter_conditions)}, 耗时: {search_time:.3f}s"
+            )
+            
+            return results
+            
+        except Exception as e:
+            logger.error(f"❌ 高级学术搜索失败: {e}")
+            return []
+    
+    def get_trending_papers(self, days: int = 7, limit: int = 20) -> List[Dict]:
+        """获取近期热门论文"""
+        try:
+            # 计算日期范围
+            end_date = datetime.now()
+            start_date = end_date - timedelta(days=days)
+            
+            # 构建日期过滤器
+            date_filter = models.Filter(
+                must=[
+                    models.FieldCondition(
+                        key="published_date",
+                        range=models.Range(
+                            gte=start_date.timestamp(),
+                            lte=end_date.timestamp()
+                        )
+                    )
+                ]
+            )
+            
+            # 滚动查询获取近期论文
+            scroll_result = self.client.scroll(
+                collection_name=self.collection_name,
+                scroll_filter=date_filter,
+                limit=limit * 3,  # 获取更多结果用于排序
+                with_payload=True,
+                with_vectors=False
+            )
+            
+            papers = scroll_result[0]
+            
+            # 按某种热度指标排序（这里简化为按发表时间）
+            papers.sort(
+                key=lambda x: x.payload.get('published_date', 0), 
+                reverse=True
+            )
+            
+            results = []
+            for paper in papers[:limit]:
+                result = {
+                    'id': paper.id,
+                    'title': paper.payload.get('title', ''),
+                    'authors': paper.payload.get('authors', []),
+                    'abstract': paper.payload.get('abstract', ''),
+                    'published_date': paper.payload.get('published_date'),
+                    'source': paper.payload.get('source', ''),
+                    'url': paper.payload.get('url', ''),
+                    'categories': paper.payload.get('categories', [])
+                }
+                results.append(result)
+            
+            logger.info(f"✅ 获取近{days}天热门论文: {len(results)}篇")
+            return results
+            
+        except Exception as e:
+            logger.error(f"❌ 获取热门论文失败: {e}")
+            return []
+    
+    def get_papers_by_author(self, author_name: str, limit: int = 50) -> List[Dict]:
+        """按作者获取论文"""
+        try:
+            author_filter = models.Filter(
+                must=[
+                    models.FieldCondition(
+                        key="authors",
+                        match=models.MatchValue(value=author_name)
+                    )
+                ]
+            )
+            
+            scroll_result = self.client.scroll(
+                collection_name=self.collection_name,
+                scroll_filter=author_filter,
+                limit=limit,
+                with_payload=True,
+                with_vectors=False
+            )
+            
+            papers = scroll_result[0]
+            
+            results = []
+            for paper in papers:
+                result = {
+                    'id': paper.id,
+                    'title': paper.payload.get('title', ''),
+                    'authors': paper.payload.get('authors', []),
+                    'published_date': paper.payload.get('published_date'),
+                    'source': paper.payload.get('source', ''),
+                    'categories': paper.payload.get('categories', [])
+                }
+                results.append(result)
+            
+            logger.info(f"✅ 获取作者 '{author_name}' 的论文: {len(results)}篇")
+            return results
+            
+        except Exception as e:
+            logger.error(f"❌ 获取作者论文失败: {e}")
+            return []
+    
     def get_collection_stats(self) -> Dict:
         """获取集合统计信息"""
         try:
             info = self.client.get_collection(self.collection_name)
+            
+            # 获取数据源统计
+            scroll_result = self.client.scroll(
+                collection_name=self.collection_name,
+                limit=10000,
+                with_payload=True,
+                with_vectors=False
+            )
+            
+            papers = scroll_result[0]
+            source_counts = defaultdict(int)
+            year_counts = defaultdict(int)
+            category_counts = defaultdict(int)
+            
+            for paper in papers:
+                payload = paper.payload or {}
+                
+                # 数据源统计
+                source = payload.get('source', 'unknown')
+                source_counts[source] += 1
+                
+                # 年份统计
+                year = payload.get('year', 'unknown')
+                year_counts[year] += 1
+                
+                # 分类统计
+                categories = payload.get('categories', [])
+                for category in categories:
+                    category_counts[category] += 1
             
             return {
                 'total_points': info.points_count,
                 'vector_size': info.config.params.vectors.size,
                 'distance_metric': info.config.params.vectors.distance.name,
                 'status': info.status.name,
-                'optimizer_status': info.optimizer_status
+                'optimizer_status': getattr(info, 'optimizer_status', 'unknown'),
+                'search_stats': self.search_stats,
+                'data_distribution': {
+                    'sources': dict(source_counts),
+                    'years': dict(sorted(year_counts.items())),
+                    'top_categories': dict(sorted(category_counts.items(), key=lambda x: x[1], reverse=True)[:10])
+                },
+                'hybrid_search_enabled': self.enable_hybrid_search,
+                'bm25_documents': len(self.document_texts) if self.bm25_index else 0
             }
         except Exception as e:
             logger.error(f"获取统计信息失败: {e}")
             return {}
 
 class VectorDatabaseManager:
-    """向量数据库管理器"""
+    """向量数据库管理器 - 企业级版本"""
     
     def __init__(self, config: Dict):
         self.db = QdrantVectorDB(
@@ -310,7 +689,10 @@ class VectorDatabaseManager:
             port=config.get('qdrant_port', 6333),
             collection_name=config.get('collection_name', 'ai_papers'),
             vector_size=config.get('vector_size', 1024),
-            timeout=config.get('qdrant_timeout', 120) # 从配置读取或默认120秒
+            timeout=config.get('qdrant_timeout', 120),
+            enable_hybrid_search=config.get('enable_hybrid_search', True),
+            bm25_weight=config.get('bm25_weight', 0.3),
+            vector_weight=config.get('vector_weight', 0.7)
         )
     
     def build_knowledge_base(self, processed_chunks_path: Path, chunks: Optional[List[Dict]] = None) -> bool:
@@ -364,15 +746,36 @@ class VectorDatabaseManager:
         query_vector: np.ndarray,
         query_text: str,
         top_k: int = 5,
+        search_type: str = "hybrid",
         **kwargs
     ) -> List[Dict]:
         """执行检索"""
-        return self.db.hybrid_search(
-            query_vector=query_vector,
-            query_text=query_text,
-            top_k=top_k,
-            **kwargs
-        )
+        if search_type == "academic":
+            return self.db.advanced_academic_search(
+                query_vector=query_vector,
+                query_text=query_text,
+                top_k=top_k,
+                **kwargs
+            )
+        else:
+            return self.db.hybrid_search(
+                query_vector=query_vector,
+                query_text=query_text,
+                top_k=top_k,
+                **kwargs
+            )
+    
+    def get_trending_papers(self, days: int = 7, limit: int = 20) -> List[Dict]:
+        """获取近期热门论文"""
+        return self.db.get_trending_papers(days=days, limit=limit)
+    
+    def get_papers_by_author(self, author_name: str, limit: int = 50) -> List[Dict]:
+        """按作者获取论文"""
+        return self.db.get_papers_by_author(author_name=author_name, limit=limit)
+    
+    def get_comprehensive_stats(self) -> Dict:
+        """获取综合统计信息"""
+        return self.db.get_collection_stats()
 
 # 使用示例和测试
 async def main():

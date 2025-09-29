@@ -1,0 +1,52 @@
+# Dockerfile.collector
+# Background data collector container
+FROM python:3.11-slim
+
+# Set working directory
+WORKDIR /app
+
+# Install system dependencies
+RUN apt-get update && apt-get install -y \
+    build-essential \
+    curl \
+    cron \
+    && rm -rf /var/lib/apt/lists/*
+
+# Copy requirements
+COPY requirements.txt .
+
+# Install Python dependencies
+RUN pip install --no-cache-dir -r requirements.txt
+
+# Copy application code
+COPY . .
+
+# Create necessary directories
+RUN mkdir -p /app/data /app/logs /app/models
+
+# Set environment variables
+ENV PYTHONPATH=/app
+ENV PYTHONUNBUFFERED=1
+
+# Create cron job for daily data collection
+RUN echo "0 2 * * * cd /app && python -c \"from src.data_ingestion.multi_source_collector import MultiSourceCollector; import asyncio; from pathlib import Path; asyncio.run(MultiSourceCollector(Path('/app/data')).daily_incremental_update())\" >> /var/log/cron.log 2>&1" > /etc/cron.d/data-collection
+
+# Give execution rights on the cron job
+RUN chmod 0644 /etc/cron.d/data-collection
+
+# Apply cron job
+RUN crontab /etc/cron.d/data-collection
+
+# Create the log file to be able to run tail
+RUN touch /var/log/cron.log
+
+# Health check script
+COPY scripts/collector-health.sh /app/collector-health.sh
+RUN chmod +x /app/collector-health.sh
+
+# Health check
+HEALTHCHECK --interval=60s --timeout=30s --start-period=60s --retries=3 \
+    CMD /app/collector-health.sh
+
+# Start cron and tail logs
+CMD cron && tail -f /var/log/cron.log

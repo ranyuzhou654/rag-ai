@@ -36,8 +36,8 @@ pip install -r requirements.txt
 # Data collection and indexing
 python run_rag_system.py
 
-# Launch Streamlit web interface
-streamlit run app.py
+# Launch enhanced Streamlit web interface with personalization
+streamlit run enhanced_app.py
 
 # Background Qdrant vector database (required)
 ./qdrant --storage-path ./storage
@@ -100,8 +100,81 @@ The system follows a 7-layer architecture:
 ## Entry Points
 
 - **`run_rag_system.py`**: Data collection, indexing, and system initialization
-- **`app.py`**: Streamlit web interface for end-user interaction
+- **`enhanced_app.py`**: Enhanced Streamlit web interface with personalization features  
+- **`api/enhanced_main.py`**: Enhanced FastAPI backend with personalization endpoints
 - **`setup.py`**: Interactive environment setup script
+
+## Enhanced Features (New in v2.0)
+
+### 🎯 Personalization System
+- **User Profiling** (`src/personalization/user_profiler.py`): Intelligent tracking of research interests and interaction patterns
+- **Recommendation Engine** (`src/personalization/recommendation_engine.py`): Daily AI-curated content with hybrid filtering  
+- **Preference Tracking** (`src/personalization/preference_tracker.py`): Automated learning from user behavior
+
+### 💾 Storage Optimization  
+- **Multi-tier Storage** (`src/storage/storage_optimizer.py`): Hot/warm/cold/archived data lifecycle management
+- **Usage Analytics** (`src/storage/usage_analytics.py`): Advanced access pattern analysis and optimization
+- **Data Lifecycle** (`src/storage/data_lifecycle.py`): Automated data migration and compression
+
+### 🚀 Enhanced RAG Engine
+- **Enhanced RAG System** (`src/generation/enhanced_rag_system.py`): Integrated personalization with traditional RAG
+- **Personalized Query Processing**: Context-aware query enhancement based on user profile
+- **Smart Retrieval**: User preference-weighted document ranking and filtering
+
+## Key Implementation Details
+
+### User Profiling Architecture
+```python
+# Core data structures
+@dataclass
+class UserProfile:
+    user_id: str
+    research_interests: List[ResearchInterest]
+    interaction_history: List[UserInteraction]
+    preferences: Dict[str, Any]
+    total_queries: int = 0
+    avg_session_duration: float = 0.0
+
+# Automatic interest extraction
+async def extract_research_interests(query: str, response: str) -> List[ResearchInterest]:
+    # NLP-based keyword and concept extraction
+    # Weighted scoring based on interaction context
+```
+
+### Storage Optimization Strategy
+```python  
+# Multi-tier storage classification
+class StorageTier(Enum):
+    HOT = "hot"        # High-frequency access, SSD storage
+    WARM = "warm"      # Medium-frequency access, hybrid storage  
+    COLD = "cold"      # Low-frequency access, HDD storage
+    ARCHIVED = "archived"  # Compressed long-term storage
+
+# Intelligent migration based on access patterns
+async def optimize_storage(target_hot_ratio: float = 0.1):
+    patterns = await analyze_access_patterns(days=30)
+    migration_plan = generate_migration_plan(patterns, target_hot_ratio)
+    return await execute_migration(migration_plan)
+```
+
+### Recommendation Algorithm
+```python
+# Hybrid recommendation approach
+async def generate_daily_recommendations(user_id: str, limit: int = 10):
+    profile = await get_user_profile(user_id)
+    
+    # Content-based filtering
+    content_recs = await content_based_recommendations(profile, limit // 2)
+    
+    # Collaborative filtering  
+    collaborative_recs = await collaborative_filtering(profile, limit // 2)
+    
+    # Trending content
+    trending_recs = await trending_recommendations(limit // 4)
+    
+    # Score and rank combined results
+    return await rank_recommendations(content_recs + collaborative_recs + trending_recs)
+```
 
 ## Important Implementation Notes
 
@@ -157,3 +230,56 @@ python run_rag_system.py --test              # Run regression tests after buildi
 python run_rag_system.py --no-frontend       # Run offline stages only
 python run_rag_system.py --port 8501         # Specify Streamlit port
 ```
+
+## Docker Development
+
+### Production Deployment
+```bash
+# Start all services (includes Qdrant, Redis, API, Frontend, Nginx, Monitoring)
+docker-compose up -d
+
+# Check service status
+docker-compose ps
+
+# Access services:
+# - Frontend Interface: http://localhost
+# - API Documentation: http://localhost/docs  
+# - Grafana Monitoring: http://localhost:3001
+```
+
+### Development Environment
+```bash
+# Development with hot reload
+docker-compose -f docker-compose.dev.yml up -d
+
+# Start individual services
+docker-compose up qdrant redis  # Dependencies only
+```
+
+### Frontend Development
+```bash
+cd frontend
+npm install
+npm run dev        # Development server
+npm run build      # Production build
+npm run lint       # Linting
+npm run type-check # TypeScript checking
+```
+
+## Production Architecture
+
+The system supports full containerized deployment with:
+
+- **Enhanced FastAPI Backend** (`api/enhanced_main.py`): Async API with personalization and streaming responses
+- **Next.js Frontend** (`frontend/`): Modern React interface with TypeScript
+- **Nginx Reverse Proxy**: Load balancing and SSL termination
+- **Monitoring Stack**: Prometheus + Grafana for observability
+- **Multi-layer Caching**: Memory, Redis, file, and vector caches
+- **Background Data Collection**: Automated daily updates
+
+## System Monitoring
+
+- **Health Checks**: Available at `/health` endpoints
+- **Metrics**: Prometheus metrics collection
+- **Logging**: Structured logging with Loguru
+- **Performance**: Real-time monitoring via Grafana dashboards

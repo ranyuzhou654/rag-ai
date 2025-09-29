@@ -1,175 +1,562 @@
-# RAG-AI 项目总览
+# RAG-AI: Enterprise-Grade Retrieval-Augmented Generation System
 
-现代化的 Retrieval-Augmented Generation (RAG) 系统，面向 AI 技术资讯检索与问答场景。
-整个项目已经围绕真实的工程代码实现了从数据采集、处理、索引构建、检索生成、知识图谱
-增强、评估监控到前端呈现的完整链路。本 README 将帮助你理解核心流程、快速运行项目，并
-指向更深入的模块文档与源码位置。
+> **🎉 Version 2.0 - Major Architecture Upgrade Complete!**
 
-## 📦 仓库结构速览
+A state-of-the-art RAG system built specifically for academic paper research and technical documentation. This project implements advanced features including **personalized recommendations**, **user profiling**, **storage optimization**, **metadata-first data collection**, **hybrid search**, **multi-layer caching**, comprehensive citation management, modern frontend interfaces, and production-ready deployment infrastructure.
+
+## 🌟 Key Features
+
+### 🔬 **Academic-Focused RAG System**
+- **Multi-source data collection**: ArXiv, Hugging Face Papers, AI research blogs
+- **Metadata-first strategy**: Optimized storage with on-demand full-text retrieval
+- **Academic citation system**: APA, MLA, BibTeX, IEEE format generation
+- **Source traceability**: Full academic integrity and citation tracking
+- **Personalized recommendations**: Daily AI-curated content based on user interests
+- **User profiling**: Intelligent tracking of research interests and preferences
+
+### 🚀 **Enterprise Architecture** 
+- **Enhanced Streamlit frontend**: Personalized interface with user dashboards
+- **Enhanced FastAPI backend**: Async API with personalization endpoints
+- **Multi-tier storage optimization**: Hot/warm/cold/archived data lifecycle
+- **Multi-layer caching**: Memory, Redis, file, and vector caches
+- **Hybrid search**: Semantic + keyword (BM25) + metadata filtering
+- **Microservices deployment**: Docker Compose with Nginx, monitoring
+
+### 🧠 **Advanced AI Capabilities**
+- **Intelligent query processing**: Query rewriting, sub-question generation
+- **Agentic RAG**: Self-evaluating retrieval with quality feedback loops
+- **Tiered generation**: Cost-optimized model routing (local → API)
+- **Knowledge graph enhancement**: Entity extraction and graph-based retrieval
+- **Recommendation engine**: Content-based and collaborative filtering
+- **Usage analytics**: Advanced storage and access pattern analysis
+
+### 📊 **Production-Ready Operations**
+- **Comprehensive monitoring**: Prometheus + Grafana dashboards
+- **Performance optimization**: Caching, async processing, model sharing
+- **Horizontal scaling**: Container orchestration and load balancing
+- **CI/CD ready**: Docker configurations for all environments
+
+## 📦 Architecture Overview
 
 ```
-├── app.py                     # Streamlit 前端
-├── run_rag_system.py          # 一键式管线入口
-├── configs/config.py          # 配置中心，统一读取 .env
-├── docs/                      # 各子系统说明文档
-└── src/
-    ├── data_ingestion/        # 多源异步采集器
-    ├── processing/            # 文本切分、多表示索引
-    ├── retrieval/             # 混合检索、查询智能、Agentic
-    ├── generation/            # RAG 主流程与分层生成
-    ├── knowledge_graph/       # 知识图谱抽取与检索增强
-    ├── evaluation/            # RAGAS / TruLens 综合评估
-    └── optimization/          # 模型共享与性能优化工具
+┌─────────────────────────────────────────────────────────────────┐
+│                    RAG-AI System Architecture                   │
+├─────────────────────────────────────────────────────────────────┤
+│  Frontend (Next.js)     │  API Gateway (Nginx)                  │
+├─────────────────────────┼────────────────────────────────────────┤
+│  FastAPI Backend        │  Multi-Layer Cache                     │
+│  ├─ Async RAG Endpoints │  ├─ Memory (LRU)                      │
+│  ├─ Streaming Responses │  ├─ Redis (Distributed)               │
+│  └─ Citation Management │  ├─ File (Persistent)                 │
+│                         │  └─ Vector (Specialized)              │
+├─────────────────────────┼────────────────────────────────────────┤
+│  Vector Database        │  Knowledge Graph                      │
+│  ├─ Qdrant (Hybrid)     │  ├─ Entity Extraction                 │
+│  ├─ Semantic Search     │  ├─ Relationship Mapping              │
+│  ├─ BM25 + Filtering    │  └─ Graph-Enhanced Retrieval          │
+│  └─ Academic Metadata   │                                        │
+├─────────────────────────┼────────────────────────────────────────┤
+│  Data Collection        │  Monitoring & Observability           │
+│  ├─ Metadata-First      │  ├─ Prometheus Metrics                │
+│  ├─ On-Demand PDF       │  ├─ Grafana Dashboards                │
+│  ├─ Daily Incremental   │  ├─ Performance Tracking              │
+│  └─ Multi-Source Async  │  └─ Error Analytics                   │
+└─────────────────────────────────────────────────────────────────┘
 ```
 
-## 🚀 快速上手
+## 🗂️ Project Structure
 
-### 1. 准备环境
+```
+rag-ai/
+├── 🚀 Deployment & Configuration
+│   ├── docker-compose.yml         # Production deployment
+│   ├── docker-compose.dev.yml     # Development environment  
+│   ├── Dockerfile.*               # Container configurations
+│   ├── nginx/nginx.conf           # Reverse proxy setup
+│   └── monitoring/                # Prometheus & Grafana configs
+│
+├── 🔧 Core Application
+│   ├── api/enhanced_main.py       # Enhanced FastAPI backend with personalization
+│   ├── enhanced_app.py            # Enhanced Streamlit interface with personalization
+│   ├── frontend/                  # Next.js frontend application
+│   │   ├── src/app/               # Next.js app router pages
+│   │   ├── src/components/        # React components
+│   │   ├── src/lib/               # Utilities and API client
+│   │   └── src/store/             # Zustand state management
+│   ├── run_rag_system.py          # System orchestrator
+│   └── configs/config.py          # Centralized configuration
+│
+├── 📚 Source Code Modules
+│   └── src/
+│       ├── 📥 data_ingestion/     # Multi-source data collection
+│       │   └── multi_source_collector.py  # Metadata-first collector
+│       ├── 🏗️ processing/          # Text processing & indexing
+│       │   ├── text_processor.py          # Enhanced text processing
+│       │   └── multi_representation_indexer.py
+│       ├── 🔍 retrieval/          # Hybrid search & retrieval
+│       │   ├── vector_database.py         # Enhanced Qdrant integration
+│       │   ├── query_intelligence.py      # Query processing
+│       │   └── agentic_rag.py            # Self-evaluating retrieval
+│       ├── 🤖 generation/         # Answer generation
+│       │   ├── enhanced_rag_system.py    # Enhanced RAG with personalization
+│       │   ├── ultimate_rag_system.py    # Main RAG orchestrator
+│       │   └── tiered_generation.py      # Cost-optimized routing
+│       ├── 👤 personalization/    # 🆕 User personalization
+│       │   ├── user_profiler.py          # User profile management
+│       │   ├── recommendation_engine.py  # Daily recommendations
+│       │   └── preference_tracker.py     # Interest tracking
+│       ├── 💾 storage/            # 🆕 Storage optimization
+│       │   ├── storage_optimizer.py      # Multi-tier optimization
+│       │   ├── usage_analytics.py        # Access pattern analysis
+│       │   └── data_lifecycle.py         # Automated lifecycle management
+│       ├── 📖 citation/           # Citation management
+│       │   └── citation_manager.py       # Academic citation system
+│       ├── 💾 caching/            # Multi-layer caching
+│       │   └── multilayer_cache.py       # Advanced caching system
+│       ├── 📊 monitoring/         # Performance monitoring
+│       │   └── metrics_collector.py      # Prometheus integration
+│       ├── 🧠 knowledge_graph/    # Knowledge enhancement
+│       ├── 📈 evaluation/         # System evaluation
+│       └── ⚡ optimization/       # Performance optimization
+│
+└── 📖 Documentation
+    ├── README.md                  # This comprehensive guide
+    └── docs/                      # Detailed module documentation
+```
+
+## 🚀 Quick Start
+
+### Option 1: Docker Compose (Recommended)
 
 ```bash
+# Clone the repository
+git clone https://github.com/your-username/rag-ai.git
+cd rag-ai
+
+# Start all services
+docker-compose up -d
+
+# Check service status
+docker-compose ps
+
+# Access the system
+# - Frontend Interface: http://localhost
+# - API Documentation: http://localhost/docs  
+# - Grafana Monitoring: http://localhost:3001
+```
+
+### Option 2: Development Setup
+
+```bash
+# 1. Environment setup
 python -m venv .venv
-source .venv/bin/activate  # Windows 使用 .venv\Scripts\activate
+source .venv/bin/activate  # Windows: .venv\\Scripts\\activate
 pip install -r requirements.txt
+
+# 2. Start vector database
+docker run -d -p 6333:6333 qdrant/qdrant:v1.7.0
+
+# 3. Start Redis (optional, for caching)
+docker run -d -p 6379:6379 redis:7.2-alpine
+
+# 4. Configure environment
+cp .env.example .env
+# Edit .env with your settings
+
+# 5. Initialize system
+python run_rag_system.py
+
+# 6. Start enhanced API server (in one terminal)
+uvicorn api.enhanced_main:app --host 0.0.0.0 --port 8000 --reload
+
+# 7. Start enhanced Streamlit interface (in another terminal)
+streamlit run enhanced_app.py
+
+# Alternative: Start frontend development server
+cd frontend
+npm install
+npm run dev
 ```
 
-建议在项目根目录创建 `.env` 并至少填入：
+### Option 3: Development with Docker
 
+```bash
+# Use development compose configuration
+docker-compose -f docker-compose.dev.yml up -d
+
+# This provides:
+# - Hot reload for backend and frontend
+# - Volume mounts for development
+# - Debug logging enabled
 ```
-STORAGE_ROOT=./project_data        # 数据、日志、模型等默认落地位置
-HUGGING_FACE_TOKEN=你的HF令牌      # 需要访问受限模型或API时配置
+
+## 🔧 Configuration
+
+### Environment Variables (.env)
+
+```bash
+# Storage Configuration
+STORAGE_ROOT=./project_data
+HF_HOME=./project_data/models
+HUGGING_FACE_TOKEN=your_hf_token_here
+
+# Vector Database
 QDRANT_HOST=localhost
 QDRANT_PORT=6333
+COLLECTION_NAME=ai_papers
+
+# Cache Configuration  
+REDIS_HOST=localhost
+REDIS_PORT=6379
+ENABLE_CACHE=true
+
+# Model Configuration
+EMBEDDING_MODEL=BAAI/bge-m3
+LLM_MODEL=Qwen/Qwen2-7B-Instruct
+DEVICE=auto
+
+# API Keys (for tiered generation)
+GPT4_API_KEY=your_openai_key
+CLAUDE_API_KEY=your_claude_key
+
+# Feature Toggles
+ENABLE_HYBRID_SEARCH=true
+ENABLE_AGENTIC_RAG=true
+ENABLE_KNOWLEDGE_GRAPH=true
+ENABLE_TIERED_GENERATION=true
 ```
 
-> `configs/config.py` 会在导入时自动加载 `.env`，并把 `STORAGE_ROOT` 下的 data、logs 等目录补齐。
+## 🌟 Enhanced Features in Version 2.0
 
-### 2. 初始化与运行
+### 👤 **Personalization System**
+- **User profiling**: Intelligent tracking of research interests and interaction patterns
+- **Daily recommendations**: AI-curated content based on user preferences
+- **Content filtering**: Hybrid recommendation engine with collaborative and content-based filtering
+- **User dashboard**: Personalized analytics and recommendation management
 
-项目提供 `run_rag_system.py` 作为流水线总控：
+```python
+# Example: User profiling and recommendations
+user_profiler = UserProfiler()
+profile = await user_profiler.get_or_create_user_profile(user_id)
+
+recommendation_engine = RecommendationEngine()
+recommendations = await recommendation_engine.generate_daily_recommendations(
+    user_id=user_id,
+    limit=10,
+    days_back=7
+)
+```
+
+### 💾 **Storage Optimization System**
+- **Multi-tier storage**: Hot/warm/cold/archived data lifecycle management
+- **Usage analytics**: Advanced access pattern analysis and optimization
+- **Automated migration**: Smart data movement based on access patterns
+- **Cost optimization**: Efficient storage utilization with performance monitoring
+
+```python
+# Example: Storage optimization
+storage_optimizer = StorageOptimizer()
+analytics = UsageAnalytics()
+
+# Analyze access patterns
+patterns = await analytics.analyze_access_patterns(days=30)
+
+# Optimize storage based on patterns
+optimization_result = await storage_optimizer.optimize_storage(
+    target_hot_ratio=0.1,
+    target_warm_ratio=0.3
+)
+```
+
+### 📄 **Metadata-First Data Collection**
+- **Intelligent caching**: Only fetch full PDFs when needed
+- **Daily incremental updates**: Efficient data pipeline
+- **Multi-source async collection**: ArXiv, HuggingFace, blogs
+- **Citation-ready metadata**: Academic compliance built-in
+
+```python
+# Example: On-demand full-text retrieval
+collector = MultiSourceCollector(data_dir, metadata_only=True)
+full_text = await collector.fetch_full_text_on_demand(document_id)
+```
+
+### 🔄 **Multi-Layer Caching System**
+- **4-tier architecture**: Memory → Redis → File → Vector caches
+- **Intelligent cache promotion**: Frequently accessed data moves up
+- **Specialized caches**: Separate handling for different data types
+- **Cache analytics**: Hit rates and performance monitoring
+
+```python
+# Example: Using the caching system
+cache = create_multilayer_cache(config)
+await cache.cache_query_embedding(query, embedding)
+results = await cache.get_search_results(query_hash)
+```
+
+### 📚 **Academic Citation Management**
+- **Multiple formats**: APA, MLA, BibTeX, IEEE, Chicago
+- **Source verification**: Link validation and accessibility checks
+- **Usage tracking**: Citation popularity and trends
+- **Bibliography export**: Automated reference list generation
+
+```python
+# Example: Generate citations
+citation_manager = CitationManager(data_dir)
+apa_citation = citation_manager.generate_citation(source_id, "apa")
+source_links = citation_manager.generate_source_links(source_id)
+```
+
+### 🔍 **Enhanced Hybrid Search**
+- **Semantic + Keyword**: Vector similarity + BM25 scoring
+- **Academic filtering**: Author, year, journal, category filters
+- **Query intelligence**: Automatic query rewriting and expansion
+- **Performance optimized**: Distributed indexing and caching
+
+```python
+# Example: Advanced academic search
+results = await db.advanced_academic_search(
+    query_vector=embedding,
+    query_text=query,
+    authors=["Bengio", "LeCun"],
+    year_range=(2020, 2024),
+    sources=["arxiv"],
+    categories=["cs.AI", "cs.LG"]
+)
+```
+
+### 🚀 **Production-Ready API**
+- **FastAPI backend**: High-performance async API
+- **Streaming responses**: Real-time answer generation
+- **WebSocket support**: Live updates and notifications
+- **OpenAPI documentation**: Interactive API explorer
 
 ```bash
-python run_rag_system.py                # 完整执行：环境检查 → 采集 → 处理 → 建库 → 测试 → 前端
-python run_rag_system.py --quick        # 复用已有数据，跳过采集
-python run_rag_system.py --frontend-only --port 8501
+# API Endpoints
+POST /ask              # Main Q&A endpoint
+POST /ask/stream       # Streaming responses
+POST /search           # Document search
+GET  /document/{id}    # Document retrieval
+POST /feedback         # User feedback
+GET  /stats           # System statistics
 ```
 
-常用参数：
+### 🖥️ **Modern Frontend Interface**
+- **Next.js 14**: App Router with React Server Components
+- **TypeScript**: Full type safety and developer experience
+- **Tailwind CSS**: Responsive design and modern UI components
+- **Real-time chat**: Streaming responses with Server-Sent Events
+- **State management**: Zustand for efficient client state
+- **Comprehensive search**: Advanced filtering and citation export
 
-| 参数 | 作用 |
-| ---- | ---- |
-| `--skip-check` | 跳过依赖和 Qdrant 自检 |
-| `--skip-collect` / `--skip-process` / `--skip-build` | 分别跳过数据采集、文本处理、向量建库 |
-| `--test` | 在完成建库后用 `RAGSystem.generate_answer` 做回归测试 |
-| `--no-frontend` | 仅执行离线阶段，不拉起 Streamlit |
+```tsx
+// Example: Real-time streaming chat
+const stream = apiClient.askQuestionStream({
+  query: "Explain transformer architecture",
+  rag_mode: "ultimate",
+  include_sources: true
+});
 
-### 3. 启动前端
+for await (const chunk of stream) {
+  if (chunk.type === 'content') {
+    updateMessage(chunk.content);
+  }
+}
+```
 
-流水线执行完成后，可单独启动 Web 界面：
+## 📊 Monitoring & Observability
+
+### Prometheus Metrics
+- **Request metrics**: Latency, throughput, error rates
+- **System metrics**: CPU, memory, cache performance
+- **Business metrics**: Query types, citation usage
+- **Custom dashboards**: Grafana visualization
+
+### Health Checks
+```bash
+# Service health endpoints
+curl http://localhost/health           # Overall system
+curl http://localhost/api/health       # API server
+curl http://localhost:6333/health      # Vector database
+```
+
+## 🎯 Usage Examples
+
+### Basic Q&A
+```python
+import aiohttp
+import asyncio
+
+async def ask_question():
+    async with aiohttp.ClientSession() as session:
+        async with session.post(
+            "http://localhost/api/ask",
+            json={
+                "query": "What are the latest developments in transformer models?",
+                "max_results": 5,
+                "include_sources": True,
+                "rag_mode": "ultimate"
+            }
+        ) as response:
+            result = await response.json()
+            print(f"Answer: {result['answer']}")
+            print(f"Sources: {len(result['sources'])}")
+            for source in result['sources']:
+                print(f"- {source['citation']}")
+```
+
+### Streaming Responses
+```javascript
+// Frontend streaming example
+const eventSource = new EventSource('http://localhost/api/ask/stream');
+eventSource.onmessage = function(event) {
+    const data = JSON.parse(event.data);
+    if (data.type === 'content') {
+        document.getElementById('answer').innerHTML += data.content;
+    }
+};
+```
+
+### Advanced Search
+```python
+# Search with academic filters
+response = await client.post("/api/search", json={
+    "query": "attention mechanism in neural networks",
+    "search_type": "academic",
+    "filters": {
+        "authors": ["Vaswani"],
+        "year_range": [2017, 2024],
+        "sources": ["arxiv"],
+        "has_full_text": True
+    },
+    "limit": 10
+})
+```
+
+## 🔧 Development Guide
+
+### Adding New Features
+
+1. **Create feature branch**
+```bash
+git checkout -b feature/new-enhancement
+```
+
+2. **Implement with monitoring**
+```python
+from src.monitoring import monitor_async_performance
+
+@monitor_async_performance("component", "operation")
+async def new_feature():
+    # Implementation with automatic metrics
+    pass
+```
+
+3. **Add tests**
+```bash
+pytest tests/test_new_feature.py -v
+```
+
+4. **Update documentation**
+```markdown
+## New Feature
+Description and usage examples...
+```
+
+### Performance Optimization
+
+The system includes several optimization layers:
+
+1. **Model caching**: Shared model instances across requests
+2. **Query caching**: LRU cache for similar queries  
+3. **Result caching**: Redis-backed response caching
+4. **Vector caching**: Specialized embedding storage
+5. **Connection pooling**: Efficient database connections
+
+## 🚀 Deployment
+
+### Production Deployment
 
 ```bash
-streamlit run app.py
+# 1. Clone and configure
+git clone https://github.com/your-username/rag-ai.git
+cd rag-ai
+cp .env.example .env
+# Edit .env with production settings
+
+# 2. Deploy with monitoring
+docker-compose up -d
+
+# 3. Initialize data
+docker-compose exec api python run_rag_system.py --setup
+
+# 4. Verify deployment
+curl http://your-domain/health
 ```
 
-前端会通过 `VectorDatabaseManager` 检查 Qdrant 集合是否已填充，再缓存初始化好的 `RAGSystem`
-以提供对话式体验。界面会展示生成结果、置信度、引用片段等指标。
+### Scaling Considerations
 
-## 🔄 端到端工作流
+- **API instances**: Scale FastAPI horizontally behind load balancer
+- **Vector database**: Use Qdrant clusters for large datasets
+- **Cache layer**: Redis cluster for high availability
+- **Background jobs**: Separate collector service instances
 
-### 1. 数据采集：`MultiSourceCollector`
+## 🤝 Contributing
 
-`src/data_ingestion/multi_source_collector.py` 内的 `MultiSourceCollector.collect_all` 异步抓取三类来源：
+We welcome contributions! Please see our [Contributing Guide](CONTRIBUTING.md) for details.
 
-- ArXiv：解析 Atom Feed、下载 PDF 并用 `pymupdf4llm`/PyMuPDF 抽取正文。
-- Hugging Face Papers：通过 `HfApi.list_papers` 获取热门论文元信息。
-- 主流 AI 博客：配置 RSS 列表（Google AI、OpenAI、BAIR、DeepMind 等）。
+### Development Workflow
 
-采集结果统一序列化为 `raw_collected_data.json`，同时缓存已处理 ID、复用 `aiohttp` 会话以提高吞吐。
+1. Fork the repository
+2. Create feature branch
+3. Implement changes with tests
+4. Submit pull request with clear description
+5. Ensure CI/CD passes
 
-### 2. 文本处理：`EnhancedTextProcessor`
+## 📝 License
 
-`src/processing/text_processor.py` 将原始文档转换为可检索的文本块：
+This project is licensed under the MIT License - see the [LICENSE](LICENSE) file for details.
 
-1. `HierarchicalTextSplitter` 先按章节正则再递归切分，保留章节名和序号元信息。
-2. `MultilingualEmbedder` 通过 `ModelRegistry.get_sentence_transformer` 共享加载 BGE-M3，批量生成向量。
-3. 若配置启用多表示（默认开启），`MultiRepresentationIndexer` 会并发调用共享 LLM 生成摘要与假设问题，
-   并再次编码，形成 `original/summary/hypothetical_question` 多条索引记录。
-4. 结果写入 `processed_chunks.json`，并携带 embedding、语义类型、原始元数据等字段。
+## 🔗 Resources
 
-### 3. 向量知识库：`VectorDatabaseManager`
+- **Documentation**: [Full documentation](docs/)
+- **API Reference**: [OpenAPI Docs](http://localhost/docs)
+- **Monitoring**: [Grafana Dashboards](http://localhost:3001)
+- **Issues**: [GitHub Issues](https://github.com/your-username/rag-ai/issues)
+- **Discussions**: [GitHub Discussions](https://github.com/your-username/rag-ai/discussions)
 
-`src/retrieval/vector_database.py` 封装了 Qdrant 连接、集合创建与批量写入：
+## 📈 Roadmap
 
-- `QdrantVectorDB.add_chunks` 按批 upsert，附带 `text_tokens` 字段实现密集向量 + 简易中文滑窗分词的混合检索。
-- `hybrid_search` 将向量得分与关键词命中进行加权融合，同时支持按 `semantic_type` 等字段过滤。
-- 构建完成后可通过 `get_collection_stats` 查看向量维度、数量、索引状态。
+### Version 2.1 (Planned)
+- [x] **Next.js frontend implementation** ✅ **COMPLETED**
+  - Modern React interface with TypeScript
+  - Real-time chat with Server-Sent Events streaming
+  - Document search and citation management
+  - System monitoring dashboard
+  - Responsive design with Tailwind CSS
+- [ ] Advanced knowledge graph features
+- [ ] Multi-modal document support (images, tables)
+- [ ] Real-time collaboration features
 
-### 4. 查询理解与检索
-
-- `EnhancedQueryProcessor`（`src/generation/rag_generator.py`）使用共享嵌入模型缓存查询向量，
-  并在配置允许时委托 `QueryIntelligenceEngine`（`src/retrieval/query_intelligence.py`）分析语言、复杂度、查询类型，
-  生成重写版本、子问题以及 HyDE 假设文档。
-- `VectorDatabaseManager.search` 对每个优化查询执行混合检索，并记录来源、权重。系统会进行去重，
-  避免重复片段污染上下文。
-
-### 5. 上下文优化与生成
-
-- `ContextOptimizer`（`EnhancedContextOptimizer`）在启用时结合 `SmartReranker`、`ContextualCompressor`
-  做多信号重排序与上下文压缩，控制最终拼接长度。
-- `LLMGenerator` 复用 `ModelRegistry.get_llm` 加载 Hugging Face 上的指令模型，按照 prompt 模版生成答案。
-- `EnhancedRAGSystem.generate_answer` 汇总过程耗时、检索策略、置信度等信息返回给前端或调用方。
-
-### 6. Agentic 检索循环（可选）
-
-`src/retrieval/agentic_rag.py` 提供 `AgenticRAGOrchestrator`：
-
-- `RetrievalEvaluator` 通过共享 LLM 评估检索片段的相关性、完整性、矛盾点并给出下一步动作建议。
-- 根据决策自动扩展查询、追加检索或终止循环，并记录 `AgenticStep` 供分析。
-- `generate_answer_agentic` 将多轮检索结果与生成输出整合，适合难题或需要多跳推理的场景。
-
-### 7. 知识图谱增强
-
-- `KnowledgeGraphIndexer`（`src/knowledge_graph/knowledge_extractor.py`）抽取实体、关系，落地到 SQLite + NetworkX。
-- `KnowledgeGraphRetriever` 和 `KGEnhancedRetriever` 在检索阶段补充结构化上下文，
-  并向前端返回识别到的实体、关系以提升可解释性。
-
-### 8. 评估与持续优化
-
-`src/evaluation/comprehensive_evaluation.py` 构建统一评估入口：
-
-- `RAGASEvaluator`、`TruLensEvaluator` 会检测依赖是否安装，缺失时记录模拟分数并给出提醒。
-- `ComprehensiveEvaluator.evaluate_single_case / evaluate_golden_dataset` 支持单例及黄金集合评估，
-  输出 faithfulness、relevancy、groundedness 等指标、建议与汇总报告。
-
-性能层面，`src/optimization/model_registry.py` 通过全局缓存复用所有向量模型与大模型，
-避免重复加载导致的 GPU / 显存浪费。
-
-## ⚙️ 配置与存储
-
-- 默认数据目录位于 `STORAGE_ROOT` 下：`data/raw`、`data/processed`、`logs`、`evaluation`、`knowledge_graph` 等。
-- 可在 `.env` 中覆盖嵌入模型、LLM、Qdrant 参数、功能开关（例如 `ENABLE_MULTI_REPRESENTATION`、
-  `ENABLE_AGENTIC_RAG`、`ENABLE_CONTEXTUAL_COMPRESSION`）。
-- Hugging Face 模型缓存目录可通过 `HF_HOME` 指定，`config.py` 会同步设置 `TRANSFORMERS_CACHE` 等环境变量。
-
-## 📚 深入阅读
-
-项目为每个子系统准备了独立文档，位于 `docs/` 或对应模块目录：
-
-- `docs/API_REFERENCE.md` – 主要 Python API 与调用示例。
-- `docs/pipeline/README.md` – `run_rag_system.py` 全流程解析。
-- `src/data_ingestion/README.md`、`src/processing/README.md`、`src/retrieval/README.md` 等 – 深入说明实现细节。
-- `docs/LEARNING_GUIDE.md` – 针对初学者的完整学习路径与工程优化建议。
-
-## 🧪 开发与测试
-
-建议在提交前运行：
-
-```bash
-python -m compileall src
-```
-
-如果需要检查 Streamlit 前端或 Agentic 流程，可结合 README 中的步骤拉起服务并进行手工验收。
+### Version 2.2 (Future)
+- [ ] Fine-tuning pipeline integration
+- [ ] Advanced evaluation frameworks
+- [ ] Multi-language support expansion
+- [ ] Enterprise SSO integration
 
 ---
 
-欢迎通过 Issue / PR 贡献更多改进。若本项目对你有帮助，别忘了点亮 ⭐️！
+## 🎉 Acknowledgments
 
+Built with modern AI and web technologies:
+- **FastAPI** for high-performance API
+- **Qdrant** for vector similarity search  
+- **Redis** for distributed caching
+- **Prometheus & Grafana** for monitoring
+- **Docker** for containerization
+- **Nginx** for reverse proxy
+
+**📧 Contact**: For questions or support, please open an issue or reach out to the maintainers.
+
+---
+
+*RAG-AI v2.0 - Powering the next generation of academic research and knowledge discovery* 🚀
