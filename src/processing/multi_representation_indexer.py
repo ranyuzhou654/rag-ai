@@ -59,7 +59,7 @@ class SummaryGenerator(_SharedLLMComponent):
         eos_token_id = getattr(self.tokenizer, "eos_token_id", None)
         bos_token_id = getattr(self.tokenizer, "bos_token_id", None)
         self.generation_config = GenerationConfig(
-            max_new_tokens=200,  # Shorter for summaries
+            max_new_tokens=80,  # Shorter for summaries
             temperature=0.3,
             top_p=0.8,
             do_sample=True,
@@ -69,46 +69,71 @@ class SummaryGenerator(_SharedLLMComponent):
             bos_token_id=bos_token_id
         )
     
-    def generate_summary(self, text: str, max_length: int = 150) -> str:
-        """生成文本摘要"""
-        # Detect language
-        is_chinese = bool(re.search(r'[\u4e00-\u9fff]', text))
-        
-        if is_chinese:
-            prompt = f"""请为以下文本生成一个简洁准确的摘要，控制在{max_length}字以内：
+    def generate_summaries(self, texts: List[str], max_length: int = 150) -> List[str]:
+        """批量生成文本摘要"""
+        if not texts:
+            return []
 
-原文：{text[:1000]}...
-
-摘要："""
-        else:
-            prompt = f"""Generate a concise and accurate summary of the following text, keeping it under {max_length} words:
-
-Original text: {text[:1000]}...
-
-Summary:"""
-        
-        try:
-            inputs = self.tokenizer(prompt, return_tensors="pt").to(self.device)
-            outputs = self.model.generate(**inputs, generation_config=self.generation_config)
-            response = self.tokenizer.decode(outputs[0], skip_special_tokens=True)
-            
-            # Extract summary
+        prompts: List[str] = []
+        is_chinese_flags: List[bool] = []
+        for text in texts:
+            is_chinese = bool(re.search(r'[\u4e00-\u9fff]', text))
+            is_chinese_flags.append(is_chinese)
             if is_chinese:
-                summary_part = response.split("摘要：")[-1].strip()
+                prompt = (
+                    f"请为以下文本生成一个简洁准确的摘要，控制在{max_length}字以内：\n\n"
+                    f"原文：{text[:1000]}...\n\n摘要："
+                )
             else:
-                summary_part = response.split("Summary:")[-1].strip()
-            
-            # Clean up and limit length
-            summary = summary_part.split('\n')[0].strip()
-            if len(summary) > max_length * 2:  # Rough character limit
-                summary = summary[:max_length * 2] + "..."
-            
-            return summary if summary else text[:max_length]
-            
+                prompt = (
+                    f"Generate a concise and accurate summary of the following text, keeping it under {max_length} words:\n\n"
+                    f"Original text: {text[:1000]}...\n\nSummary:"
+                )
+            prompts.append(prompt)
+
+        try:
+            inputs = self.tokenizer(
+                prompts,
+                return_tensors="pt",
+                padding=True,
+                truncation=True
+            ).to(self.device)
+
+            outputs = self.model.generate(
+                **inputs,
+                generation_config=self.generation_config
+            )
+
+            responses = self.tokenizer.batch_decode(
+                outputs, skip_special_tokens=True
+            )
+
+            summaries: List[str] = []
+            for response, text, is_chinese in zip(responses, texts, is_chinese_flags):
+                summary_part = (
+                    response.split("摘要：")[-1].strip()
+                    if is_chinese
+                    else response.split("Summary:")[-1].strip()
+                )
+                summary = summary_part.split('\n')[0].strip()
+                if len(summary) > max_length * 2:
+                    summary = summary[:max_length * 2] + "..."
+                if not summary:
+                    summary = text[:max_length] if len(text) <= max_length else text[:max_length] + "..."
+                summaries.append(summary)
+
+            return summaries
+
         except Exception as e:
-            logger.error(f"Failed to generate summary: {e}")
-            # Fallback: return first part of text
-            return text[:max_length] + "..." if len(text) > max_length else text
+            logger.error(f"Failed to generate batch summaries: {e}")
+            return [
+                (text[:max_length] + "..." if len(text) > max_length else text)
+                for text in texts
+            ]
+
+    def generate_summary(self, text: str, max_length: int = 150) -> str:
+        """兼容单文本摘要生成"""
+        return self.generate_summaries([text], max_length=max_length)[0]
 
 class QuestionGenerator(_SharedLLMComponent):
     """假设性问题生成器"""
@@ -124,7 +149,7 @@ class QuestionGenerator(_SharedLLMComponent):
         eos_token_id = getattr(self.tokenizer, "eos_token_id", None)
         bos_token_id = getattr(self.tokenizer, "bos_token_id", None)
         self.generation_config = GenerationConfig(
-            max_new_tokens=300,
+            max_new_tokens=80,
             temperature=0.4,
             top_p=0.9,
             do_sample=True,
@@ -134,55 +159,82 @@ class QuestionGenerator(_SharedLLMComponent):
             bos_token_id=bos_token_id
         )
     
-    def generate_questions(self, text: str, num_questions: int = 3) -> List[str]:
-        """生成假设性问题"""
-        # Detect language
-        is_chinese = bool(re.search(r'[\u4e00-\u9fff]', text))
-        
-        if is_chinese:
-            prompt = f"""基于以下文本内容，生成{num_questions}个相关的问题，这些问题应该能够通过该文本来回答：
-
-文本内容：{text[:800]}
-
-问题：
-1."""
-        else:
-            prompt = f"""Based on the following text content, generate {num_questions} relevant questions that could be answered by this text:
-
-Text content: {text[:800]}
-
-Questions:
-1."""
-        
-        try:
-            inputs = self.tokenizer(prompt, return_tensors="pt").to(self.device)
-            outputs = self.model.generate(**inputs, generation_config=self.generation_config)
-            response = self.tokenizer.decode(outputs[0], skip_special_tokens=True)
-            
-            # Extract questions
-            if is_chinese:
-                questions_part = response.split("问题：")[-1].strip()
-            else:
-                questions_part = response.split("Questions:")[-1].strip()
-            
-            # Parse numbered questions
-            questions = []
-            lines = questions_part.split('\n')
-            
-            for line in lines:
-                line = line.strip()
-                if re.match(r'^\d+\.', line):
-                    question = re.sub(r'^\d+\.\s*', '', line).strip()
-                    if question and len(question) > 10 and question.endswith('?'):
-                        questions.append(question)
-                        if len(questions) >= num_questions:
-                            break
-            
-            return questions[:num_questions]
-            
-        except Exception as e:
-            logger.error(f"Failed to generate questions: {e}")
+    def generate_questions_batch(
+        self, texts: List[str], num_questions: int = 3
+    ) -> List[List[str]]:
+        """批量生成假设性问题"""
+        if not texts:
             return []
+
+        prompts: List[str] = []
+        is_chinese_flags: List[bool] = []
+        for text in texts:
+            is_chinese = bool(re.search(r'[\u4e00-\u9fff]', text))
+            is_chinese_flags.append(is_chinese)
+            if is_chinese:
+                prompt = (
+                    f"基于以下文本内容，生成{num_questions}个相关的问题，这些问题应该能够通过该文本来回答：\n\n"
+                    f"文本内容：{text[:800]}\n\n问题：\n1."
+                )
+            else:
+                prompt = (
+                    f"Based on the following text content, generate {num_questions} relevant questions that could be answered by this text:\n\n"
+                    f"Text content: {text[:800]}\n\nQuestions:\n1."
+                )
+            prompts.append(prompt)
+
+        try:
+            inputs = self.tokenizer(
+                prompts,
+                return_tensors="pt",
+                padding=True,
+                truncation=True
+            ).to(self.device)
+
+            outputs = self.model.generate(
+                **inputs,
+                generation_config=self.generation_config
+            )
+
+            responses = self.tokenizer.batch_decode(
+                outputs, skip_special_tokens=True
+            )
+
+            batched_questions: List[List[str]] = []
+            for response, text, is_chinese in zip(responses, texts, is_chinese_flags):
+                questions_part = (
+                    response.split("问题：")[-1].strip()
+                    if is_chinese
+                    else response.split("Questions:")[-1].strip()
+                )
+
+                questions: List[str] = []
+                lines = questions_part.split('\n')
+                for line in lines:
+                    line = line.strip()
+                    if re.match(r'^\d+\.', line):
+                        question = re.sub(r'^\d+\.\s*', '', line).strip()
+                        if question and len(question) > 10 and question.endswith('?'):
+                            questions.append(question)
+                            if len(questions) >= num_questions:
+                                break
+
+                if not questions:
+                    fallback = f"What is the main idea of: {text[:80]}?"
+                    questions = [fallback]
+
+                batched_questions.append(questions[:num_questions])
+
+            return batched_questions
+
+        except Exception as e:
+            logger.error(f"Failed to generate batch questions: {e}")
+            return [[] for _ in texts]
+
+    def generate_questions(self, text: str, num_questions: int = 3) -> List[str]:
+        """兼容单文本问题生成"""
+        results = self.generate_questions_batch([text], num_questions=num_questions)
+        return results[0] if results else []
 
 class MultiRepresentationIndexer:
     """多表示索引器 - 为每个文本块创建多种表示形式"""
@@ -247,29 +299,61 @@ class MultiRepresentationIndexer:
             progress_tracker.start_display()
 
         try:
-            # 准备生成任务
-            semaphore = asyncio.Semaphore(self.config.get('multi_rep_concurrency', 3))
-            
-            if progress_tracker and self.llm_available:
-                progress_tracker.start_stage("generation")
-            
-            # 创建带进度跟踪的任务
-            tasks = [
-                self._prepare_single_chunk(chunk, semaphore, index, len(chunks), progress_tracker)
-                for index, chunk in enumerate(chunks)
+            multi_rep_chunks = [
+                MultiRepresentationChunk(
+                    content=chunk['content'],
+                    chunk_id=chunk['chunk_id'],
+                    source_id=chunk['source_id'],
+                    metadata=chunk.get('metadata', {}),
+                    content_embedding=chunk.get('embedding')
+                )
+                for chunk in chunks
             ]
 
-            multi_rep_chunks = await asyncio.gather(*tasks)
-            
-            if progress_tracker and self.llm_available:
-                progress_tracker.complete_stage("generation")
+            if self.llm_available and multi_rep_chunks:
+                if progress_tracker:
+                    progress_tracker.start_stage("generation")
 
-            # 批量嵌入所有表示
+                batch_size = max(1, self.config.get('multi_rep_batch_size', 8))
+
+                for start in range(0, len(multi_rep_chunks), batch_size):
+                    batch = multi_rep_chunks[start:start + batch_size]
+                    texts = [c.content for c in batch]
+
+                    summaries = await asyncio.to_thread(
+                        self.summary_generator.generate_summaries,
+                        texts,
+                        150
+                    )
+
+                    for chunk_obj, summary in zip(batch, summaries):
+                        chunk_obj.summary = summary
+
+                    if progress_tracker:
+                        progress_tracker.increment_stage("generation", len(batch))
+
+                    questions_batch = await asyncio.to_thread(
+                        self.question_generator.generate_questions_batch,
+                        texts,
+                        3
+                    )
+
+                    for chunk_obj, questions in zip(batch, questions_batch):
+                        chunk_obj.hypothetical_questions = questions
+
+                    if progress_tracker:
+                        progress_tracker.increment_stage("generation", len(batch))
+
+                if progress_tracker:
+                    progress_tracker.complete_stage("generation")
+            else:
+                logger.debug("LLM unavailable or no chunks; skipping generation stage")
+
             if progress_tracker:
                 progress_tracker.start_stage("embedding")
-            
+
             self._embed_representations(multi_rep_chunks, progress_tracker)
-            
+
             if progress_tracker:
                 progress_tracker.complete_stage("embedding")
 
@@ -279,53 +363,6 @@ class MultiRepresentationIndexer:
 
         logger.success(f"Multi-representation indexing complete for {len(multi_rep_chunks)} chunks")
         return multi_rep_chunks
-
-    async def _prepare_single_chunk(
-        self,
-        chunk: Dict,
-        semaphore: asyncio.Semaphore,
-        index: int,
-        total: int,
-        progress_tracker: Optional[MultiStageProgressTracker] = None
-    ) -> MultiRepresentationChunk:
-        if index % 50 == 0 and not progress_tracker:
-            logger.info(f"Preparing chunk {index + 1}/{total}")
-
-        multi_chunk = MultiRepresentationChunk(
-            content=chunk['content'],
-            chunk_id=chunk['chunk_id'],
-            source_id=chunk['source_id'],
-            metadata=chunk.get('metadata', {}),
-            content_embedding=chunk.get('embedding')
-        )
-
-        if not self.llm_available:
-            return multi_chunk
-
-        async with semaphore:
-            increment_amount = 2  # summary + questions per chunk
-            try:
-                summary_task = asyncio.to_thread(
-                    self.summary_generator.generate_summary,
-                    chunk['content'],
-                    150
-                )
-                questions_task = asyncio.to_thread(
-                    self.question_generator.generate_questions,
-                    chunk['content'],
-                    3
-                )
-
-                summary, questions = await asyncio.gather(summary_task, questions_task)
-                multi_chunk.summary = summary
-                multi_chunk.hypothetical_questions = questions
-            except Exception as e:
-                logger.error(f"Error generating representations for chunk {chunk['chunk_id']}: {e}")
-            finally:
-                if progress_tracker:
-                    progress_tracker.increment_stage("generation", increment_amount)
-
-        return multi_chunk
     
     def _embed_representations(self, chunks: List[MultiRepresentationChunk], progress_tracker: Optional[MultiStageProgressTracker] = None):
         """批量嵌入所有表示形式"""
