@@ -237,6 +237,45 @@ class QdrantVectorDB:
                 tokens.add(segment[i:i + size])
 
         return list(tokens)
+
+    def update_bm25_index(self, chunks: List[Dict]) -> None:
+        """根据新增或更新的chunk刷新BM25索引"""
+        if not self.enable_hybrid_search:
+            return
+
+        updated = False
+        for chunk in chunks:
+            chunk_id = chunk.get('chunk_id')
+            content = chunk.get('content')
+            if not chunk_id or not content:
+                continue
+
+            if chunk_id in self.doc_id_mapping:
+                index = self.doc_id_mapping[chunk_id]
+                self.document_texts[index] = content
+            else:
+                self.doc_id_mapping[chunk_id] = len(self.document_texts)
+                self.document_texts.append(content)
+            updated = True
+
+        if not updated:
+            logger.debug("BM25 index update skipped: no valid chunks provided")
+            return
+
+        tokenized_corpus = []
+        for text in self.document_texts:
+            tokens = self._tokenize_for_search(text)
+            if not tokens:
+                # Fallback: basic whitespace split to avoid empty document
+                tokens = text.split()
+            tokenized_corpus.append(tokens)
+
+        if not any(tokenized_corpus):
+            logger.warning("BM25 index update skipped: corpus produced no tokens")
+            return
+
+        self.bm25_index = BM25Okapi(tokenized_corpus)
+        logger.success(f"BM25 index updated with {len(self.document_texts)} documents")
     
     def hybrid_search(
         self,
@@ -839,4 +878,3 @@ async def main():
 if __name__ == "__main__":
     import asyncio
     asyncio.run(main())
-
