@@ -56,13 +56,17 @@ class SummaryGenerator(_SharedLLMComponent):
             component_name="Summary Generator"
         )
 
+        eos_token_id = getattr(self.tokenizer, "eos_token_id", None)
+        bos_token_id = getattr(self.tokenizer, "bos_token_id", None)
         self.generation_config = GenerationConfig(
             max_new_tokens=200,  # Shorter for summaries
             temperature=0.3,
             top_p=0.8,
             do_sample=True,
             repetition_penalty=1.1,
-            pad_token_id=self.tokenizer.eos_token_id
+            pad_token_id=eos_token_id,
+            eos_token_id=eos_token_id,
+            bos_token_id=bos_token_id
         )
     
     def generate_summary(self, text: str, max_length: int = 150) -> str:
@@ -117,13 +121,17 @@ class QuestionGenerator(_SharedLLMComponent):
             component_name="Question Generator"
         )
 
+        eos_token_id = getattr(self.tokenizer, "eos_token_id", None)
+        bos_token_id = getattr(self.tokenizer, "bos_token_id", None)
         self.generation_config = GenerationConfig(
             max_new_tokens=300,
             temperature=0.4,
             top_p=0.9,
             do_sample=True,
             repetition_penalty=1.1,
-            pad_token_id=self.tokenizer.eos_token_id
+            pad_token_id=eos_token_id,
+            eos_token_id=eos_token_id,
+            bos_token_id=bos_token_id
         )
     
     def generate_questions(self, text: str, num_questions: int = 3) -> List[str]:
