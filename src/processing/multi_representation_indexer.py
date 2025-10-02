@@ -10,6 +10,7 @@ import json
 from pathlib import Path
 
 from src.optimization.model_registry import ModelRegistry
+from src.utils.progress_tracker import MultiStageProgressTracker, SimpleProgressBar
 
 @dataclass
 class MultiRepresentationChunk:
@@ -210,21 +211,63 @@ class MultiRepresentationIndexer:
     
     async def create_multi_representations(
         self,
-        chunks: List[Dict]
+        chunks: List[Dict],
+        show_progress: bool = True
     ) -> List[MultiRepresentationChunk]:
         """为文本块创建多表示索引，使用异步生成提升吞吐"""
         logger.info(f"Creating multi-representations for {len(chunks)} chunks asynchronously...")
 
-        semaphore = asyncio.Semaphore(self.config.get('multi_rep_concurrency', 3))
-        tasks = [
-            self._prepare_single_chunk(chunk, semaphore, index, len(chunks))
-            for index, chunk in enumerate(chunks)
-        ]
+        # 计算各阶段的工作量
+        total_chunks = len(chunks)
+        if self.llm_available:
+            # 每个chunk生成摘要和问题
+            generation_items = total_chunks * 2  # summary + questions
+            # 每个chunk有原文、摘要、3个问题的嵌入
+            embedding_items = total_chunks * 5  # content + summary + 3 questions
+        else:
+            generation_items = 0
+            embedding_items = total_chunks  # 只有原文嵌入
 
-        multi_rep_chunks = await asyncio.gather(*tasks)
+        # 初始化进度跟踪器
+        progress_tracker = None
+        if show_progress:
+            progress_tracker = MultiStageProgressTracker("多表示处理")
+            
+            if self.llm_available:
+                progress_tracker.add_stage("generation", "生成摘要和问题", generation_items, weight=3.0)
+            progress_tracker.add_stage("embedding", "嵌入向量化", embedding_items, weight=2.0)
+            progress_tracker.start_display()
 
-        # Batch embed all representations
-        self._embed_representations(multi_rep_chunks)
+        try:
+            # 准备生成任务
+            semaphore = asyncio.Semaphore(self.config.get('multi_rep_concurrency', 3))
+            
+            if progress_tracker and self.llm_available:
+                progress_tracker.start_stage("generation")
+            
+            # 创建带进度跟踪的任务
+            tasks = [
+                self._prepare_single_chunk(chunk, semaphore, index, len(chunks), progress_tracker)
+                for index, chunk in enumerate(chunks)
+            ]
+
+            multi_rep_chunks = await asyncio.gather(*tasks)
+            
+            if progress_tracker and self.llm_available:
+                progress_tracker.complete_stage("generation")
+
+            # 批量嵌入所有表示
+            if progress_tracker:
+                progress_tracker.start_stage("embedding")
+            
+            self._embed_representations(multi_rep_chunks, progress_tracker)
+            
+            if progress_tracker:
+                progress_tracker.complete_stage("embedding")
+
+        finally:
+            if progress_tracker:
+                progress_tracker.stop_display_thread()
 
         logger.success(f"Multi-representation indexing complete for {len(multi_rep_chunks)} chunks")
         return multi_rep_chunks
@@ -234,9 +277,10 @@ class MultiRepresentationIndexer:
         chunk: Dict,
         semaphore: asyncio.Semaphore,
         index: int,
-        total: int
+        total: int,
+        progress_tracker: Optional[MultiStageProgressTracker] = None
     ) -> MultiRepresentationChunk:
-        if index % 50 == 0:
+        if index % 50 == 0 and not progress_tracker:
             logger.info(f"Preparing chunk {index + 1}/{total}")
 
         multi_chunk = MultiRepresentationChunk(
@@ -251,6 +295,7 @@ class MultiRepresentationIndexer:
             return multi_chunk
 
         async with semaphore:
+            increment_amount = 2  # summary + questions per chunk
             try:
                 summary_task = asyncio.to_thread(
                     self.summary_generator.generate_summary,
@@ -268,10 +313,13 @@ class MultiRepresentationIndexer:
                 multi_chunk.hypothetical_questions = questions
             except Exception as e:
                 logger.error(f"Error generating representations for chunk {chunk['chunk_id']}: {e}")
+            finally:
+                if progress_tracker:
+                    progress_tracker.increment_stage("generation", increment_amount)
 
         return multi_chunk
     
-    def _embed_representations(self, chunks: List[MultiRepresentationChunk]):
+    def _embed_representations(self, chunks: List[MultiRepresentationChunk], progress_tracker: Optional[MultiStageProgressTracker] = None):
         """批量嵌入所有表示形式"""
         logger.info("Embedding multi-representations...")
         
@@ -293,19 +341,36 @@ class MultiRepresentationIndexer:
         if texts_to_embed:
             # Batch embedding
             logger.info(f"Embedding {len(texts_to_embed)} additional representations...")
-            embeddings = self.embedder.encode(
-                texts_to_embed,
-                batch_size=32,
-                show_progress_bar=True,
-                convert_to_numpy=True
-            )
+            
+            # 自定义进度跟踪的批处理
+            batch_size = 32
+            
+            all_embeddings = []
+            for i in range(0, len(texts_to_embed), batch_size):
+                batch_texts = texts_to_embed[i:i + batch_size]
+                batch_embeddings = self.embedder.encode(
+                    batch_texts,
+                    batch_size=batch_size,
+                    show_progress_bar=False,  # 我们自己管理进度
+                    convert_to_numpy=True
+                )
+                all_embeddings.extend(batch_embeddings)
+                
+                # 更新进度
+                if progress_tracker:
+                    completed_items = min(i + batch_size, len(texts_to_embed))
+                    progress_tracker.update_stage("embedding", completed_items)
             
             # Assign embeddings back to chunks
-            for embedding, (chunk, rep_type) in zip(embeddings, text_mappings):
+            for embedding, (chunk, rep_type) in zip(all_embeddings, text_mappings):
                 if rep_type == 'summary':
                     chunk.summary_embedding = embedding
                 elif rep_type == 'question':
                     chunk.questions_embeddings.append(embedding)
+        else:
+            # 如果没有额外的表示需要嵌入，直接完成
+            if progress_tracker:
+                progress_tracker.update_stage("embedding", len(chunks))
     
     def generate_index_entries(
         self, 
@@ -426,7 +491,7 @@ async def main():
     ]
     
     # Create multi-representations
-    multi_chunks = indexer.create_multi_representations(test_chunks)
+    multi_chunks = await indexer.create_multi_representations(test_chunks)
     
     # Display results
     for chunk in multi_chunks:
