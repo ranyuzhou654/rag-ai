@@ -306,11 +306,23 @@ class RAGSystemRunner:
         logger.info(f"🚀 启动前端界面 (端口: {port})...")
         
         try:
-            app_file = self.project_root / "app.py"
-            if not app_file.exists():
-                logger.error(f"❌ 找不到前端应用文件: {app_file}")
+            candidate_files = [
+                self.project_root / "app.py",
+                self.project_root / "enhanced_app.py",
+                self.project_root / "frontend" / "app.py",
+                self.project_root / "frontend" / "streamlit_app.py"
+            ]
+
+            app_file = None
+            for candidate in candidate_files:
+                if candidate.exists():
+                    app_file = candidate
+                    break
+
+            if not app_file:
+                logger.error("❌ 找不到前端应用文件，请确认 app.py 或 enhanced_app.py 是否存在")
                 return False
-            
+
             # 启动Streamlit
             cmd = [
                 sys.executable, "-m", "streamlit", "run",
