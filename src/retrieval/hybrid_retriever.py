@@ -7,6 +7,7 @@
 from typing import List, Dict, Optional, Any, Tuple
 from dataclasses import dataclass
 import asyncio
+import re
 from loguru import logger
 
 from langchain_core.documents import Document
@@ -16,6 +17,13 @@ from langchain.retrievers import EnsembleRetriever, ContextualCompressionRetriev
 from langchain_qdrant import QdrantVectorStore
 from langchain_core.embeddings import Embeddings
 from rank_bm25 import BM25Okapi
+
+try:  # Optional dependency for better Chinese tokenization
+    import jieba  # type: ignore
+    _JIEBA_AVAILABLE = True
+except ImportError:  # pragma: no cover - optional dependency
+    jieba = None  # type: ignore
+    _JIEBA_AVAILABLE = False
 
 # 本地组件导入
 from .vector_database import VectorDatabaseManager
@@ -51,47 +59,61 @@ class DenseVectorRetriever(BaseRetriever):
         self.k = k
     
     def _get_relevant_documents(self, query: str) -> List[Document]:
-        """同步检索文档"""
-        return asyncio.run(self._aget_relevant_documents(query))
-    
+        """同步检索文档，避免嵌套事件循环"""
+        import time
+        start_time = time.time()
+
+        try:
+            results = self.vector_store.similarity_search_with_score(
+                query, k=self.k
+            )
+        except Exception as e:
+            logger.error(f"Dense vector retrieval failed: {e}")
+            return []
+
+        retrieval_time = time.time() - start_time
+        return self._build_documents(results, retrieval_time)
+
     async def _aget_relevant_documents(self, query: str) -> List[Document]:
         """异步检索文档"""
         import time
         start_time = time.time()
-        
+
         try:
             # 执行向量相似度搜索
             results = await self.vector_store.asimilarity_search_with_score(
                 query, k=self.k
             )
-            
+
             retrieval_time = time.time() - start_time
-            
-            enhanced_docs = []
-            for doc, score in results:
-                # 创建检索元数据
-                metadata = RetrievalMetadata(
-                    retrieval_method='vector',
-                    confidence_score=float(score),
-                    chunk_quality_score=self._assess_chunk_quality(doc.page_content),
-                    source_authority=self._assess_source_authority(doc.metadata),
-                    retrieval_time=retrieval_time
-                )
-                
-                # 创建增强文档
-                enhanced_doc = EnhancedDocument(
-                    page_content=doc.page_content,
-                    metadata={**doc.metadata, 'vector_score': score},
-                    retrieval_metadata=metadata
-                )
-                enhanced_docs.append(enhanced_doc)
-            
-            logger.debug(f"Dense vector retrieval: {len(enhanced_docs)} docs in {retrieval_time:.3f}s")
-            return enhanced_docs
+            docs = self._build_documents(results, retrieval_time)
+            logger.debug(f"Dense vector retrieval: {len(docs)} docs in {retrieval_time:.3f}s")
+            return docs
             
         except Exception as e:
             logger.error(f"Dense vector retrieval failed: {e}")
             return []
+
+    def _build_documents(
+        self, results: List[Tuple[Document, float]], retrieval_time: float
+    ) -> List[EnhancedDocument]:
+        enhanced_docs: List[EnhancedDocument] = []
+        for doc, score in results:
+            metadata = RetrievalMetadata(
+                retrieval_method='vector',
+                confidence_score=float(score),
+                chunk_quality_score=self._assess_chunk_quality(doc.page_content),
+                source_authority=self._assess_source_authority(doc.metadata),
+                retrieval_time=retrieval_time
+            )
+
+            enhanced_doc = EnhancedDocument(
+                page_content=doc.page_content,
+                metadata={**doc.metadata, 'vector_score': score},
+                retrieval_metadata=metadata
+            )
+            enhanced_docs.append(enhanced_doc)
+        return enhanced_docs
     
     def _assess_chunk_quality(self, content: str) -> float:
         """评估文档块质量"""
@@ -138,57 +160,89 @@ class SparseVectorRetriever(BaseRetriever):
         
         # 构建BM25索引
         corpus = [doc.page_content for doc in documents]
-        self.bm25 = BM25Okapi([text.split() for text in corpus])
-        
+        tokenized_corpus = [self._tokenize(text) for text in corpus]
+        self.bm25 = BM25Okapi(tokenized_corpus)
+
+        if not _JIEBA_AVAILABLE and any(self._contains_chinese(text) for text in corpus):
+            logger.warning(
+                "jieba not installed; falling back to basic tokenization for Chinese text"
+            )
+
         logger.info(f"BM25 index built with {len(documents)} documents")
     
     def _get_relevant_documents(self, query: str) -> List[Document]:
         """同步检索文档"""
-        return asyncio.run(self._aget_relevant_documents(query))
-    
+        return self._retrieve_sync(query)
+
     async def _aget_relevant_documents(self, query: str) -> List[Document]:
-        """异步检索文档"""
+        """异步检索文档，在线程中执行同步BM25逻辑"""
+        return await asyncio.to_thread(self._retrieve_sync, query)
+
+    def _retrieve_sync(self, query: str) -> List[Document]:
         import time
         start_time = time.time()
-        
+
         try:
-            # BM25评分
-            query_tokens = query.split()
+            query_tokens = self._tokenize(query)
             scores = self.bm25.get_scores(query_tokens)
-            
-            # 获取top-k结果
-            top_indices = sorted(range(len(scores)), key=lambda i: scores[i], reverse=True)[:self.k]
-            
+
+            top_indices = sorted(
+                range(len(scores)), key=lambda i: scores[i], reverse=True
+            )[:self.k]
+
             retrieval_time = time.time() - start_time
-            
+
             enhanced_docs = []
             for idx in top_indices:
-                if scores[idx] > 0:  # 只返回有相关性的结果
-                    doc = self.documents[idx]
-                    
-                    # 创建检索元数据
-                    metadata = RetrievalMetadata(
-                        retrieval_method='bm25',
-                        confidence_score=float(scores[idx]),
-                        chunk_quality_score=self._assess_chunk_quality(doc.page_content),
-                        source_authority=self._assess_source_authority(doc.metadata),
-                        retrieval_time=retrieval_time
-                    )
-                    
-                    # 创建增强文档
-                    enhanced_doc = EnhancedDocument(
-                        page_content=doc.page_content,
-                        metadata={**doc.metadata, 'bm25_score': scores[idx]},
-                        retrieval_metadata=metadata
-                    )
-                    enhanced_docs.append(enhanced_doc)
-            
+                if scores[idx] <= 0:
+                    continue
+                doc = self.documents[idx]
+
+                metadata = RetrievalMetadata(
+                    retrieval_method='bm25',
+                    confidence_score=float(scores[idx]),
+                    chunk_quality_score=self._assess_chunk_quality(doc.page_content),
+                    source_authority=self._assess_source_authority(doc.metadata),
+                    retrieval_time=retrieval_time
+                )
+
+                enhanced_doc = EnhancedDocument(
+                    page_content=doc.page_content,
+                    metadata={**doc.metadata, 'bm25_score': scores[idx]},
+                    retrieval_metadata=metadata
+                )
+                enhanced_docs.append(enhanced_doc)
+
             logger.debug(f"BM25 retrieval: {len(enhanced_docs)} docs in {retrieval_time:.3f}s")
             return enhanced_docs
-            
+
         except Exception as e:
             logger.error(f"BM25 retrieval failed: {e}")
             return []
+
+    @staticmethod
+    def _contains_chinese(text: str) -> bool:
+        return bool(re.search(r"[\u4e00-\u9fff]", text))
+
+    def _tokenize(self, text: str) -> List[str]:
+        text = text.strip()
+        if not text:
+            return []
+
+        tokens: List[str] = []
+
+        if _JIEBA_AVAILABLE and self._contains_chinese(text):
+            tokens = [tok.strip() for tok in jieba.lcut(text) if tok.strip()]
+        else:
+            tokens = re.findall(r"[A-Za-z0-9_]+", text.lower())
+
+        if not tokens:
+            if self._contains_chinese(text):
+                tokens = re.findall(r"[\u4e00-\u9fff]", text)
+            else:
+                tokens = text.split()
+
+        return tokens
     
     def _assess_chunk_quality(self, content: str) -> float:
         """评估文档块质量（与DenseVectorRetriever相同）"""
@@ -225,53 +279,71 @@ class KnowledgeGraphRetrieverWrapper(BaseRetriever):
     
     def _get_relevant_documents(self, query: str) -> List[Document]:
         """同步检索文档"""
-        return asyncio.run(self._aget_relevant_documents(query))
-    
+        return self._retrieve_sync(query)
+
     async def _aget_relevant_documents(self, query: str) -> List[Document]:
-        """异步检索文档"""
+        """异步检索文档，通过线程运行同步KG逻辑"""
+        return await asyncio.to_thread(self._retrieve_sync, query)
+
+    def _retrieve_sync(self, query: str) -> List[Document]:
         import time
         start_time = time.time()
-        
+
         try:
-            # 使用知识图谱检索
-            kg_results = await self.kg_retriever.retrieve_enhanced_context(query, top_k=self.k)
-            
+            kg_results = self.kg_retriever.retrieve_kg_context(
+                query=query,
+                top_k=self.k,
+                include_relations=True,
+                include_paths=True
+            )
+
             retrieval_time = time.time() - start_time
-            
-            enhanced_docs = []
+
+            enhanced_docs: List[EnhancedDocument] = []
             for result in kg_results:
-                # 从KG结果构建文档
-                content = result.get('enhanced_content', result.get('content', ''))
-                entities = result.get('entities', [])
-                relations = result.get('relations', [])
-                
-                if content:  # 只有在有内容时才创建文档
-                    # 创建检索元数据
-                    metadata = RetrievalMetadata(
-                        retrieval_method='knowledge_graph',
-                        confidence_score=result.get('confidence', 0.7),
-                        chunk_quality_score=0.8,  # KG增强的内容通常质量较高
-                        source_authority=0.9,  # 结构化知识通常权威性较高
-                        retrieval_time=retrieval_time,
-                        kg_entities=entities,
-                        kg_relations=relations
-                    )
-                    
-                    # 创建增强文档
-                    enhanced_doc = EnhancedDocument(
-                        page_content=content,
-                        metadata={
-                            **result.get('metadata', {}),
-                            'kg_entities': entities,
-                            'kg_relations': relations
-                        },
-                        retrieval_metadata=metadata
-                    )
-                    enhanced_docs.append(enhanced_doc)
-            
+                content = result.related_info
+                if not content:
+                    continue
+
+                raw_metadata = (
+                    dict(result.metadata) if isinstance(result.metadata, dict) else {}
+                )
+
+                entities = [result.entity]
+                aliases = raw_metadata.get('aliases')
+                if aliases:
+                    entities.extend(aliases)
+
+                metadata = RetrievalMetadata(
+                    retrieval_method='knowledge_graph',
+                    confidence_score=float(result.confidence),
+                    chunk_quality_score=0.8,
+                    source_authority=0.9,
+                    retrieval_time=retrieval_time,
+                    kg_entities=entities,
+                    kg_relations=raw_metadata.get('relations') or raw_metadata.get('path')
+                )
+
+                enhanced_doc = EnhancedDocument(
+                    page_content=content,
+                    metadata={
+                        'entity': result.entity,
+                        'entity_type': result.entity_type,
+                        'kg_source_type': result.source_type,
+                        'kg_hops': raw_metadata.get('hops'),
+                        'kg_path': raw_metadata.get('path'),
+                        'kg_source_chunks': raw_metadata.get('source_chunks'),
+                        'kg_relations': raw_metadata.get('relations'),
+                        'kg_raw_metadata': raw_metadata,
+                        **raw_metadata
+                    },
+                    retrieval_metadata=metadata
+                )
+                enhanced_docs.append(enhanced_doc)
+
             logger.debug(f"KG retrieval: {len(enhanced_docs)} docs in {retrieval_time:.3f}s")
             return enhanced_docs
-            
+
         except Exception as e:
             logger.error(f"Knowledge graph retrieval failed: {e}")
             return []
@@ -317,7 +389,16 @@ class HybridRetriever(BaseRetriever):
     
     def _get_relevant_documents(self, query: str) -> List[Document]:
         """同步检索文档"""
-        return asyncio.run(self._aget_relevant_documents(query))
+        vector_docs = self.dense_retriever._get_relevant_documents(query)
+        bm25_docs = self.sparse_retriever._get_relevant_documents(query)
+        kg_docs = (
+            self.kg_retriever._get_relevant_documents(query)
+            if self.kg_retriever
+            else []
+        )
+
+        fused_docs = self._fuse_results(vector_docs, bm25_docs, kg_docs, query)
+        return fused_docs[:self.k]
     
     async def _aget_relevant_documents(self, query: str) -> List[Document]:
         """异步混合检索"""

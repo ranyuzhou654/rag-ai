@@ -4,6 +4,7 @@ transformers>=4.35.0
 sentence-transformers>=2.3.0
 huggingface_hub
 numpy>=1.24.0
+jieba
 
 # Vector Database and Storage
 qdrant-client>=1.7.0
