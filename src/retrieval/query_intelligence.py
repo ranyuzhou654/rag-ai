@@ -285,6 +285,21 @@ class QueryIntelligenceEngine:
         
         # Initialize components
         self.complexity_analyzer = QueryComplexityAnalyzer()
+
+        self.embedder = None
+        embedding_model = config.get('embedding_model', 'BAAI/bge-m3')
+        embed_device = config.get('device', 'auto')
+        try:
+            self.embedder = ModelRegistry.get_sentence_transformer(
+                embedding_model,
+                device=embed_device
+            )
+            logger.success(
+                f"Query Intelligence Engine using embedder: {embedding_model}"
+            )
+        except Exception as exc:
+            logger.error(f"Failed to initialize query embedder '{embedding_model}': {exc}")
+            self.embedder = None
         
         # Initialize LLM-based components if model is available
         model_name = config.get('llm_model')
