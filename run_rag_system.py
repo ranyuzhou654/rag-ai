@@ -270,16 +270,11 @@ class RAGSystemRunner:
             for query in test_queries:
                 try:
                     logger.info(f"测试查询: {query}")
-                    
-                    loop = asyncio.new_event_loop()
-                    asyncio.set_event_loop(loop)
-                    
-                    result = loop.run_until_complete(
+
+                    result = asyncio.run(
                         rag_system.generate_answer(query, top_k=3)
                     )
-                    
-                    loop.close()
-                    
+
                     if result and result.answer:
                         logger.info(f"✅ 查询成功 - 置信度: {result.confidence:.2f}")
                         success_count += 1
