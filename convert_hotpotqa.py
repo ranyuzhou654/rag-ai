@@ -10,14 +10,48 @@ from src.evaluation.evaluation_pipeline import TestCase
 
 
 def extract_reference_docs(sample: Dict) -> List[str]:
+    """Extract supporting sentences with robust handling of context format."""
+    supporting_facts = sample.get("supporting_facts", []) or []
+    context_pairs = sample.get("context", []) or []
+
+    context_dict: Dict[str, List[str]] = {}
+    for entry in context_pairs:
+        title = None
+        sentences = None
+        if isinstance(entry, (list, tuple)) and len(entry) >= 2:
+            title, sentences = entry[0], entry[1]
+        elif isinstance(entry, dict):
+            title = entry.get("title") or entry.get("heading")
+            sentences = entry.get("sentences") or entry.get("context")
+        if title is None or sentences is None:
+            continue
+        if isinstance(sentences, str):
+            sentences = [sentences]
+        context_dict[title] = list(sentences)
+
     refs: List[str] = []
-    supporting_facts = sample.get("supporting_facts", [])
-    context_pairs = sample.get("context", [])
-    context_dict = {title: sentences for title, sentences in context_pairs}
-    for title, sentence_idx in supporting_facts:
-        if title in context_dict and sentence_idx < len(context_dict[title]):
-            refs.append(context_dict[title][sentence_idx])
-    return refs
+    for fact in supporting_facts:
+        if isinstance(fact, (list, tuple)) and len(fact) >= 2:
+            title, sent_idx = fact[0], fact[1]
+            sentences = context_dict.get(title)
+            if sentences and 0 <= sent_idx < len(sentences):
+                refs.append(sentences[sent_idx])
+
+    if not refs:
+        # fallback: take first sentence of each context block
+        for sentences in context_dict.values():
+            if sentences:
+                refs.append(sentences[0])
+                if len(refs) >= 5:
+                    break
+
+    seen = set()
+    unique_refs = []
+    for r in refs:
+        if r not in seen:
+            seen.add(r)
+            unique_refs.append(r)
+    return unique_refs
 
 
 def convert_hotpotqa(split: str = "validation", limit: int = 1000) -> List[TestCase]:
