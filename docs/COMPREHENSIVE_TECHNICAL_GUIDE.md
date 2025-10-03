@@ -287,6 +287,21 @@ class HierarchicalTextSplitter:
         return chunks
 ```
 
+#### SemanticGraphSplitter（新增）
+
+**位置**: `src/processing/text_processor.py`
+
+**核心思路**:
+- 通过共享的 `MultilingualEmbedder` 对句子编码
+- 以动态缓冲区累积句子，使用余弦相似度、长度、句数多重条件控制切分
+- 支持配置参数：`semantic_similarity_threshold`、`semantic_max_sentences`
+- 配置项 `splitter_type=semantic` 可切换至该策略
+
+**优势**:
+- chunk 边界更贴合语义，降低跨 chunk 信息丢失
+- 对长篇论文、技术报告等结构复杂文本表现优于固定窗口
+- 为后续检索与生成提供更一致的上下文
+
 #### MultiRepresentationIndexer
 
 **位置**: `src/processing/multi_representation_indexer.py`
@@ -296,6 +311,12 @@ class HierarchicalTextSplitter:
 - 异步批量处理，提高效率
 - 语义类型标注，便于检索优化
 - 自适应压缩和质量控制
+
+**最新增强**:
+- **批量推理**：摘要/问题生成改为批处理，`multi_rep_batch_size` 控制 GPU 吞吐
+- **摘要压缩**：`SummaryCompressor` 去除冗余句子，保留核心信息
+- **问题过滤**：`QuestionQualityFilter` 根据语言与 token 重叠筛选问题，提供兜底模板
+- **进度追踪优化**：避免异步任务 completing out-of-order 造成进度倒退
 
 ### 3.3 检索引擎 (Retrieval Engine)
 
@@ -343,6 +364,7 @@ class QdrantVectorDB:
 - 自动查询重写和扩展
 - 子问题分解和 HyDE 文档生成
 - 多语言查询处理
+- 共享句向量模型 `embedder` 供检索与生成阶段复用
 
 **技术实现**:
 ```python
@@ -374,6 +396,11 @@ class QueryIntelligenceEngine:
 - 智能结果融合：权重调节和分数归一化
 - 检索元数据追踪：来源、置信度、质量评估
 - 自适应检索策略：根据查询类型调整权重
+
+**改进亮点**:
+- 移除 `asyncio.run` 嵌套，兼容上层 async 框架
+- BM25 支持 `jieba` 分词，更适配中文文本
+- 知识图谱检索返回实体、路径、原始 chunk 等结构化元数据
 
 ### 3.4 缓存系统 (Caching System)
 
@@ -1666,6 +1693,20 @@ alerting:
   }
 }
 ```
+
+### 7.4 评测自动化 (Evaluation Automation)
+
+- **评测数据目录**：所有测试集、报告统一存储于 `<STORAGE_ROOT>/evaluation/`
+- **数据集脚本**：
+  - `python data/evaluation/convert_hotpotqa.py` → HotpotQA 1K 英文多跳问答
+  - `python data/evaluation/convert_crag.py` → CRAG 1K 中文检索问答
+- **评测命令**：
+  ```bash
+  python -m src.evaluation.evaluation_pipeline --dataset-preset hotpotqa --use-ragas
+  python -m src.evaluation.evaluation_pipeline --dataset-preset crag --mode enhanced
+  ```
+- **输出结果**：`evaluation_<timestamp>.json`，包含平均指标、单案例详情、可选 RAGAS 分数
+- **CI 建议**：模型/索引更新后自动运行评测，确保指标回归
 
 ## 8. 性能优化
 
