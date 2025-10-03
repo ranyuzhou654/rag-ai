@@ -12,7 +12,11 @@ from configs.config import config as default_config
 from src.evaluation.evaluation_pipeline import TestCase
 
 
-CRAG_URL = "https://github.com/Alibaba-NLP/CRAG/archive/refs/heads/main.tar.gz"
+CRAG_URLS = [
+    "https://github.com/Alibaba-NLP/CRAG/archive/refs/heads/main.tar.gz",
+    "https://github.com/Alibaba-NLP/CRAG/archive/refs/heads/master.tar.gz",
+    "https://github.com/Alibaba-NLP/CRAG/archive/refs/tags/v1.0.tar.gz"
+]
 
 
 def download_crag(dest_dir: Path) -> Path:
@@ -22,11 +26,23 @@ def download_crag(dest_dir: Path) -> Path:
 
     dest_dir.mkdir(exist_ok=True, parents=True)
     print("Downloading CRAG benchmark...")
-    with requests.get(CRAG_URL, stream=True) as resp:
-        resp.raise_for_status()
-        with open(archive_path, "wb") as f:
-            for chunk in resp.iter_content(chunk_size=8192):
-                f.write(chunk)
+    last_error = None
+    for url in CRAG_URLS:
+        try:
+            print(f"  -> {url}")
+            with requests.get(url, stream=True, timeout=60) as resp:
+                resp.raise_for_status()
+                with open(archive_path, "wb") as f:
+                    for chunk in resp.iter_content(chunk_size=8192):
+                        if chunk:
+                            f.write(chunk)
+            return archive_path
+        except Exception as exc:
+            last_error = exc
+            if archive_path.exists():
+                archive_path.unlink()
+            continue
+    raise RuntimeError(f"Failed to download CRAG dataset. Last error: {last_error}")
     return archive_path
 
 
