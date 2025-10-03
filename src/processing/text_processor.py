@@ -1,6 +1,6 @@
 # src/processing/text_processor.py
 import re
-from typing import List, Dict, Optional
+from typing import List, Dict, Optional, Iterable
 from dataclasses import dataclass, field
 import numpy as np
 from loguru import logger
@@ -9,6 +9,13 @@ import json
 from pathlib import Path
 from .multi_representation_indexer import MultiRepresentationIndexer
 from src.optimization.model_registry import ModelRegistry
+from numpy.linalg import norm
+
+
+def _sentence_tokenize(text: str) -> Iterable[str]:
+    """Simple sentence tokenizer that keeps punctuation."""
+    pattern = re.compile(r'[^。！？!?\n]+(?:[。！？!?]\s*)?')
+    return [seg.strip() for seg in pattern.findall(text) if seg.strip()]
 
 @dataclass
 class TextChunk:
@@ -81,6 +88,92 @@ class HierarchicalTextSplitter:
         logger.info(f"Document {source_id} split into {len(chunks)} chunks.")
         return chunks
 
+
+class SemanticGraphSplitter:
+    """语义图驱动的分割器，结合句向量相似度形成更自然的片段"""
+
+    def __init__(
+        self,
+        embedder: 'MultilingualEmbedder',
+        chunk_size: int = 512,
+        similarity_threshold: float = 0.7,
+        max_sentences: int = 12
+    ):
+        self.embedder = embedder
+        self.chunk_size = chunk_size
+        self.similarity_threshold = similarity_threshold
+        self.max_sentences = max_sentences
+
+    def _cosine(self, a: np.ndarray, b: np.ndarray) -> float:
+        denom = norm(a) * norm(b)
+        if denom == 0:
+            return 0.0
+        return float(np.dot(a, b) / denom)
+
+    def split_document(self, doc_content: str, source_id: str, metadata: Dict) -> List['TextChunk']:
+        sentences = _sentence_tokenize(doc_content)
+        if not sentences:
+            return []
+
+        embeddings = self.embedder.embed_sentences(sentences)
+
+        chunks: List[TextChunk] = []
+        buffer_sentences: List[str] = []
+        buffer_embeddings: List[np.ndarray] = []
+        chunk_counter = 0
+
+        for sentence, embedding in zip(sentences, embeddings):
+            if not buffer_sentences:
+                buffer_sentences.append(sentence)
+                buffer_embeddings.append(embedding)
+                continue
+
+            avg_embedding = np.mean(buffer_embeddings, axis=0)
+            similarity = self._cosine(avg_embedding, embedding)
+            projected_length = len(''.join(buffer_sentences)) + len(sentence)
+            too_long = projected_length > self.chunk_size * 1.2
+            too_many_sentences = len(buffer_sentences) >= self.max_sentences
+
+            if similarity < self.similarity_threshold or too_long or too_many_sentences:
+                chunk_text = '\n'.join(buffer_sentences)
+                chunk_id = f"{source_id}_chunk_{chunk_counter}"
+                chunk_metadata = {
+                    **metadata,
+                    'section': metadata.get('section', 'semantic'),
+                    'chunk_index': chunk_counter,
+                    'avg_similarity': similarity
+                }
+                chunks.append(TextChunk(
+                    content=chunk_text,
+                    chunk_id=chunk_id,
+                    source_id=source_id,
+                    metadata=chunk_metadata
+                ))
+                chunk_counter += 1
+                buffer_sentences = [sentence]
+                buffer_embeddings = [embedding]
+            else:
+                buffer_sentences.append(sentence)
+                buffer_embeddings.append(embedding)
+
+        if buffer_sentences:
+            chunk_text = '\n'.join(buffer_sentences)
+            chunk_id = f"{source_id}_chunk_{chunk_counter}"
+            chunk_metadata = {
+                **metadata,
+                'section': metadata.get('section', 'semantic'),
+                'chunk_index': chunk_counter
+            }
+            chunks.append(TextChunk(
+                content=chunk_text,
+                chunk_id=chunk_id,
+                source_id=source_id,
+                metadata=chunk_metadata
+            ))
+
+        logger.info(f"Semantic splitter produced {len(chunks)} chunks for {source_id}")
+        return chunks
+
 class MultilingualEmbedder:
     """
     多语言向量化器 (保持不变，但确认与BGE-M3模型一起使用)
@@ -116,19 +209,38 @@ class MultilingualEmbedder:
         """查询向量化"""
         return self.model.encode(query, convert_to_numpy=True)
 
+    def embed_sentences(self, sentences: List[str]) -> np.ndarray:
+        if not sentences:
+            return np.array([])
+        return self.model.encode(
+            sentences,
+            batch_size=32,
+            show_progress_bar=False,
+            convert_to_numpy=True
+        )
+
 
 class EnhancedTextProcessor:
     """增强文本处理管理器 - 支持多表示索引"""
     def __init__(self, config: Dict):
         self.config = config
-        self.splitter = HierarchicalTextSplitter(
-            chunk_size=config.get('chunk_size', 512),
-            chunk_overlap=config.get('chunk_overlap', 50)
-        )
         self.embedder = MultilingualEmbedder(
             model_name=config.get('embedding_model', 'BAAI/bge-m3'),
             device=config.get('device', 'auto')
         )
+        splitter_type = config.get('splitter_type', 'hierarchical')
+        if splitter_type == 'semantic':
+            self.splitter = SemanticGraphSplitter(
+                embedder=self.embedder,
+                chunk_size=config.get('chunk_size', 512),
+                similarity_threshold=config.get('semantic_similarity_threshold', 0.72),
+                max_sentences=config.get('semantic_max_sentences', 10)
+            )
+        else:
+            self.splitter = HierarchicalTextSplitter(
+                chunk_size=config.get('chunk_size', 512),
+                chunk_overlap=config.get('chunk_overlap', 50)
+            )
         config['vector_size'] = self.embedder.embedding_dim # Dynamically set vector size
         
         # Initialize multi-representation indexer

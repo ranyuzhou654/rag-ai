@@ -13,6 +13,22 @@ from sentence_transformers import SentenceTransformer
 from sklearn.metrics.pairwise import cosine_similarity
 import torch
 from transformers import AutoTokenizer, AutoModelForCausalLM, GenerationConfig
+import argparse
+from configs.config import config as default_config
+from src.generation.ultimate_rag_system import UltimateRAGSystem
+
+try:
+    from ragas import evaluate as ragas_evaluate
+    from ragas.metrics import (
+        answer_relevancy as ragas_answer_relevancy,
+        context_precision as ragas_context_precision,
+        context_recall as ragas_context_recall,
+        faithfulness as ragas_faithfulness
+    )
+    from datasets import Dataset
+    RAGAS_AVAILABLE = True
+except ImportError:  # Optional dependency
+    RAGAS_AVAILABLE = False
 
 @dataclass
 class EvaluationMetrics:
@@ -43,6 +59,46 @@ class EvaluationResult:
     metrics: EvaluationMetrics
     execution_time: float
     error: Optional[str] = None
+
+
+def load_test_cases(path: Path) -> List[TestCase]:
+    """从JSON或JSONL文件加载测试用例"""
+    if not path.exists():
+        raise FileNotFoundError(f"Test case file not found: {path}")
+
+    logger.info(f"Loading test cases from {path}")
+
+    data: List[Dict[str, Any]] = []
+    if path.suffix.lower() == '.jsonl':
+        with open(path, 'r', encoding='utf-8') as f:
+            for line in f:
+                line = line.strip()
+                if not line:
+                    continue
+                data.append(json.loads(line))
+    else:
+        with open(path, 'r', encoding='utf-8') as f:
+            payload = json.load(f)
+            if isinstance(payload, dict) and 'test_cases' in payload:
+                data = payload['test_cases']
+            elif isinstance(payload, list):
+                data = payload
+            else:
+                raise ValueError("Unsupported test case format")
+
+    test_cases: List[TestCase] = []
+    for item in data:
+        test_cases.append(TestCase(
+            query=item['query'],
+            expected_answer=item.get('expected_answer', ''),
+            reference_documents=item.get('reference_documents', []),
+            difficulty_level=item.get('difficulty_level', 'medium'),
+            query_type=item.get('query_type', 'factual'),
+            ground_truth_chunks=item.get('ground_truth_chunks')
+        ))
+
+    logger.info(f"Loaded {len(test_cases)} test cases")
+    return test_cases
 
 class LLMEvaluator:
     """基于LLM的评估器"""
@@ -231,7 +287,9 @@ class EvaluationPipeline:
         self,
         rag_system,
         test_cases: List[TestCase],
-        output_path: Optional[Path] = None
+        output_path: Optional[Path] = None,
+        rag_mode: str = "ultimate",
+        use_ragas: bool = False
     ) -> Dict[str, Any]:
         """评估RAG系统"""
         logger.info(f"Starting evaluation with {len(test_cases)} test cases")
@@ -245,7 +303,7 @@ class EvaluationPipeline:
             # 执行RAG系统
             case_start_time = time.time()
             try:
-                generation_result = await rag_system.generate_answer(test_case.query)
+                generation_result = await rag_system.generate_answer(test_case.query, mode=rag_mode)
                 execution_time = time.time() - case_start_time
                 
                 # 计算评估指标
@@ -281,11 +339,16 @@ class EvaluationPipeline:
         
         # 汇总结果
         summary = self._summarize_results(results, total_time)
-        
+
+        if use_ragas:
+            ragas_metrics = self._run_ragas(results)
+            if ragas_metrics:
+                summary['ragas'] = ragas_metrics
+
         # 保存结果
         if output_path:
             self._save_results(results, summary, output_path)
-        
+
         logger.success(f"Evaluation completed in {total_time:.2f}s")
         return summary
     
@@ -409,11 +472,65 @@ class EvaluationPipeline:
             'timestamp': datetime.now().isoformat(),
             'config': self.config
         }
-        
+
         with open(output_path, 'w', encoding='utf-8') as f:
             json.dump(output_data, f, ensure_ascii=False, indent=2)
         
         logger.info(f"Evaluation results saved to {output_path}")
+
+    def _run_ragas(self, results: List[EvaluationResult]) -> Optional[Dict[str, float]]:
+        """调用RAGAS评测，可选"""
+        if not RAGAS_AVAILABLE:
+            logger.warning("RAGAS not installed. Skipping RAGAS evaluation.")
+            return None
+
+        questions = []
+        answers = []
+        contexts = []
+        ground_truth = []
+
+        for result in results:
+            if result.error is not None:
+                continue
+            questions.append(result.test_case.query)
+            answers.append(result.generated_answer)
+            contexts.append([chunk.get('content', '') for chunk in result.retrieved_chunks])
+            ground_truth.append(result.test_case.expected_answer)
+
+        if not questions:
+            logger.warning("No successful results available for RAGAS evaluation")
+            return None
+
+        dataset = Dataset.from_dict({
+            'question': questions,
+            'answer': answers,
+            'contexts': contexts,
+            'ground_truth': ground_truth
+        })
+
+        ragas_result = ragas_evaluate(
+            dataset,
+            metrics=[
+                ragas_faithfulness,
+                ragas_answer_relevancy,
+                ragas_context_precision,
+                ragas_context_recall
+            ]
+        )
+
+        scores: Dict[str, float] = {}
+        for metric_name in ['faithfulness', 'answer_relevancy', 'context_precision', 'context_recall']:
+            if metric_name in ragas_result.column_names:
+                metric_values = [val for val in ragas_result[metric_name] if isinstance(val, (int, float))]
+                if metric_values:
+                    scores[metric_name] = float(np.mean(metric_values))
+
+        if scores:
+            logger.info("RAGAS metrics:")
+            for name, value in scores.items():
+                logger.info(f"  {name}: {value:.3f}")
+
+        return scores or None
 
 class GoldenTestSetGenerator:
     """黄金测试集生成器"""
@@ -499,32 +616,151 @@ class GoldenTestSetGenerator:
         
         logger.info(f"Test set with {len(test_cases)} cases saved to {output_path}")
 
-# 使用示例
-async def main():
-    """测试评估流水线"""
-    config = {
-        'embedding_model': 'BAAI/bge-m3',
-        'llm_model': 'Qwen/Qwen2-7B-Instruct',
-        'device': 'auto',
-        'HUGGING_FACE_TOKEN': None
+
+def build_default_rag_config() -> Dict[str, Any]:
+    """基于全局配置构建RAG系统配置字典"""
+    cfg = default_config
+    return {
+        'llm_model': cfg.LLM_MODEL,
+        'embedding_model': cfg.EMBEDDING_MODEL,
+        'device': cfg.DEVICE,
+        'HUGGING_FACE_TOKEN': cfg.HUGGING_FACE_TOKEN,
+        'qdrant_host': cfg.QDRANT_HOST,
+        'qdrant_port': cfg.QDRANT_PORT,
+        'collection_name': cfg.COLLECTION_NAME,
+        'vector_size': 1024,
+        'enable_knowledge_graph': cfg.ENABLE_KNOWLEDGE_GRAPH,
+        'knowledge_graph_db_path': str(cfg.KNOWLEDGE_GRAPH_DB_PATH),
+        'enable_tiered_generation': cfg.ENABLE_TIERED_GENERATION,
+        'enable_feedback_collection': cfg.ENABLE_FEEDBACK_COLLECTION,
+        'feedback_db_path': str(cfg.FEEDBACK_DB_PATH),
+        'api_models': cfg.API_MODELS,
+        'enable_query_intelligence': cfg.ENABLE_QUERY_INTELLIGENCE,
+        'enable_multi_representation': cfg.ENABLE_MULTI_REPRESENTATION,
+        'enable_agentic_rag': cfg.ENABLE_AGENTIC_RAG,
+        'enable_contextual_compression': cfg.ENABLE_CONTEXTUAL_COMPRESSION,
+        'default_rag_mode': cfg.DEFAULT_RAG_MODE,
+        'enable_hybrid_search': True
     }
-    
-    # 创建测试集
+
+
+def ensure_test_set(path: Path, config: Dict[str, Any], regenerate: bool = False) -> None:
+    if path.exists() and not regenerate:
+        return
+    path.parent.mkdir(exist_ok=True, parents=True)
     generator = GoldenTestSetGenerator(config)
     test_cases = generator.create_ai_domain_test_set()
-    
-    test_set_path = Path("data/evaluation/golden_test_set.json")
-    generator.save_test_set(test_cases, test_set_path)
-    
-    # 初始化评估流水线
-    pipeline = EvaluationPipeline(config)
-    
-    # 这里需要实际的RAG系统实例
-    # rag_system = EnhancedRAGSystem(config, db_manager, reranker)
-    # results = await pipeline.evaluate_rag_system(rag_system, test_cases)
-    # print(json.dumps(results, indent=2, ensure_ascii=False))
-    
-    logger.info("Evaluation pipeline test completed")
+    generator.save_test_set(test_cases, path)
+
+
+def parse_args() -> argparse.Namespace:
+    parser = argparse.ArgumentParser(description="Run automated RAG evaluation pipeline")
+    parser.add_argument(
+        "--dataset",
+        type=Path,
+        default=default_config.GOLDEN_TEST_SET_PATH,
+        help="Path to evaluation dataset (JSON or JSONL). If missing, use --generate-testset to create a default set."
+    )
+    parser.add_argument(
+        "--dataset-preset",
+        type=str,
+        choices=['golden', 'hotpotqa', 'crag'],
+        default=None,
+        help="Quick-select dataset preset located in data/evaluation/*."
+    )
+    parser.add_argument(
+        "--output",
+        type=Path,
+        default=None,
+        help="Output path for evaluation report (JSON). Defaults to storage evaluation directory."
+    )
+    parser.add_argument(
+        "--mode",
+        type=str,
+        default=default_config.DEFAULT_RAG_MODE,
+        help="RAG system mode (basic/enhanced/agentic/ultimate)"
+    )
+    parser.add_argument(
+        "--use-ragas",
+        action="store_true",
+        help="Enable additional RAGAS metrics (requires ragas + datasets)"
+    )
+    parser.add_argument(
+        "--generate-testset",
+        action="store_true",
+        help="Generate default golden test set when dataset path is missing"
+    )
+    parser.add_argument(
+        "--regenerate-testset",
+        action="store_true",
+        help="Force regenerate the default golden test set"
+    )
+    return parser.parse_args()
+
+
+async def run_evaluation_cli() -> None:
+    args = parse_args()
+
+    rag_config = build_default_rag_config()
+    pipeline_config = {
+        'embedding_model': rag_config['embedding_model'],
+        'llm_model': rag_config.get('llm_model'),
+        'device': rag_config.get('device', 'auto'),
+        'HUGGING_FACE_TOKEN': rag_config.get('HUGGING_FACE_TOKEN'),
+        'enable_ragas': args.use_ragas
+    }
+
+    if args.dataset_preset:
+        preset_map = {
+            'golden': default_config.GOLDEN_TEST_SET_PATH,
+            'hotpotqa': Path('data/evaluation/hotpotqa_testcases.json'),
+            'crag': Path('data/evaluation/crag_testcases.json')
+        }
+        dataset_path = preset_map[args.dataset_preset]
+    else:
+        dataset_path: Path = args.dataset
+    if not dataset_path.exists():
+        if args.generate_testset or args.regenerate_testset:
+            ensure_test_set(dataset_path, pipeline_config, regenerate=True)
+        else:
+            raise FileNotFoundError(f"Dataset not found at {dataset_path}. Use --generate-testset to create one.")
+
+    if args.regenerate_testset:
+        ensure_test_set(dataset_path, pipeline_config, regenerate=True)
+
+    test_cases = load_test_cases(dataset_path)
+    rag_system = UltimateRAGSystem(rag_config)
+
+    pipeline = EvaluationPipeline(pipeline_config)
+
+    output_path = args.output
+    if output_path is None:
+        timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
+        output_path = default_config.EVALUATION_OUTPUT_DIR / f"evaluation_{timestamp}.json"
+
+    output_path.parent.mkdir(exist_ok=True, parents=True)
+
+    summary = await pipeline.evaluate_rag_system(
+        rag_system=rag_system,
+        test_cases=test_cases,
+        output_path=output_path,
+        rag_mode=args.mode,
+        use_ragas=args.use_ragas
+    )
+
+    logger.info("\n📊 Evaluation Summary:")
+    for key, value in summary.get('avg_metrics', {}).items():
+        logger.info(f"  {key}: {value:.3f}")
+    if 'ragas' in summary:
+        logger.info("  RAGAS metrics:")
+        for key, value in summary['ragas'].items():
+            logger.info(f"    {key}: {value:.3f}")
+    logger.info(f"Results saved to {output_path}")
+
+
+def main():
+    asyncio.run(run_evaluation_cli())
+
 
 if __name__ == "__main__":
-    asyncio.run(main())
+    main()

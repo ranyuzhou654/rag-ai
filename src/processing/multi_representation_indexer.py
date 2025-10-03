@@ -4,6 +4,7 @@ import asyncio
 from dataclasses import dataclass, field
 import numpy as np
 from transformers import GenerationConfig
+from numpy.linalg import norm
 from loguru import logger
 import re
 import json
@@ -236,6 +237,108 @@ class QuestionGenerator(_SharedLLMComponent):
         results = self.generate_questions_batch([text], num_questions=num_questions)
         return results[0] if results else []
 
+
+class SummaryCompressor:
+    """摘要压缩器：基于句向量去冗余，提升信息密度"""
+
+    def __init__(self, embedder, max_sentences: int = 3, similarity_threshold: float = 0.85):
+        self.embedder = embedder
+        self.max_sentences = max_sentences
+        self.similarity_threshold = similarity_threshold
+
+    def _cosine(self, a: np.ndarray, b: np.ndarray) -> float:
+        denom = norm(a) * norm(b)
+        if denom == 0:
+            return 0.0
+        return float(np.dot(a, b) / denom)
+
+    def compress(self, summary: str) -> str:
+        if not summary:
+            return summary
+
+        sentences = [s.strip() for s in re.split(r'[。.!?！？]\s*', summary) if s.strip()]
+        if len(sentences) <= self.max_sentences:
+            return summary
+
+        embeddings = self.embedder.encode(
+            sentences,
+            batch_size=32,
+            show_progress_bar=False,
+            convert_to_numpy=True
+        )
+
+        selected_sentences: List[str] = []
+        selected_embeddings: List[np.ndarray] = []
+
+        for sentence, embedding in zip(sentences, embeddings):
+            if not selected_embeddings:
+                selected_sentences.append(sentence)
+                selected_embeddings.append(embedding)
+                continue
+
+            similarity = max(self._cosine(embedding, existing) for existing in selected_embeddings)
+            if similarity < self.similarity_threshold:
+                selected_sentences.append(sentence)
+                selected_embeddings.append(embedding)
+            if len(selected_sentences) >= self.max_sentences:
+                break
+
+        compressed = '。'.join(selected_sentences)
+        if compressed and not compressed.endswith(('。', '.', '!', '?', '！', '？')):
+            compressed += '。'
+        return compressed
+
+
+class QuestionQualityFilter:
+    """语言与事实一致性过滤器，降低幻觉问题"""
+
+    def __init__(self, min_overlap_ratio: float = 0.08):
+        self.min_overlap_ratio = min_overlap_ratio
+
+    @staticmethod
+    def _is_chinese(text: str) -> bool:
+        return bool(re.search(r'[\u4e00-\u9fff]', text))
+
+    @staticmethod
+    def _tokenize(text: str) -> List[str]:
+        tokens = re.findall(r'[\w\u4e00-\u9fff]+', text.lower())
+        return [t for t in tokens if len(t) > 1]
+
+    def filter(self, content: str, questions: List[str]) -> List[str]:
+        if not questions:
+            return []
+
+        is_content_chinese = self._is_chinese(content)
+        content_tokens = set(self._tokenize(content))
+
+        filtered: List[str] = []
+        for question in questions:
+            if not question:
+                continue
+
+            is_question_chinese = self._is_chinese(question)
+            if is_question_chinese != is_content_chinese:
+                continue
+
+            question_tokens = set(self._tokenize(question))
+            if not question_tokens:
+                continue
+
+            overlap = len(question_tokens & content_tokens) / len(question_tokens)
+            if overlap < self.min_overlap_ratio:
+                continue
+
+            filtered.append(question)
+
+        return filtered
+
+    def fallback(self, content: str) -> List[str]:
+        snippet = content.strip().replace('\n', ' ')
+        snippet = snippet[:80]
+        if self._is_chinese(content):
+            return [f"这段内容的核心观点是什么：{snippet}？"]
+        return [f"What is the key takeaway from: {snippet}?"]
+
 class MultiRepresentationIndexer:
     """多表示索引器 - 为每个文本块创建多种表示形式"""
     
@@ -254,6 +357,10 @@ class MultiRepresentationIndexer:
         device = config.get('device', 'auto')
         
         self.llm_available = False
+        self.summary_compressor: Optional[SummaryCompressor] = None
+        self.question_filter = QuestionQualityFilter(
+            min_overlap_ratio=config.get('question_overlap_threshold', 0.08)
+        )
         if model_name:
             try:
                 self.summary_generator = SummaryGenerator(
@@ -268,6 +375,18 @@ class MultiRepresentationIndexer:
                 logger.error(f"Failed to initialize LLM generators: {e}")
         else:
             logger.warning("Multi-Representation Indexer initialized without LLM support")
+
+        if config.get('enable_summary_compression', True):
+            try:
+                self.summary_compressor = SummaryCompressor(
+                    embedder=self.embedder,
+                    max_sentences=config.get('compression_max_sentences', 3),
+                    similarity_threshold=config.get('compression_similarity_threshold', 0.85)
+                )
+                logger.info("Summary compression enabled")
+            except Exception as exc:
+                logger.error(f"Failed to initialize summary compressor: {exc}")
+                self.summary_compressor = None
     
     async def create_multi_representations(
         self,
@@ -314,7 +433,7 @@ class MultiRepresentationIndexer:
                 if progress_tracker:
                     progress_tracker.start_stage("generation")
 
-                batch_size = max(1, self.config.get('multi_rep_batch_size', 8))
+                batch_size = max(1, self.config.get('multi_rep_batch_size', 16))
 
                 for start in range(0, len(multi_rep_chunks), batch_size):
                     batch = multi_rep_chunks[start:start + batch_size]
@@ -327,7 +446,10 @@ class MultiRepresentationIndexer:
                     )
 
                     for chunk_obj, summary in zip(batch, summaries):
-                        chunk_obj.summary = summary
+                        if self.summary_compressor:
+                            chunk_obj.summary = self.summary_compressor.compress(summary)
+                        else:
+                            chunk_obj.summary = summary
 
                     if progress_tracker:
                         progress_tracker.increment_stage("generation", len(batch))
@@ -339,7 +461,13 @@ class MultiRepresentationIndexer:
                     )
 
                     for chunk_obj, questions in zip(batch, questions_batch):
-                        chunk_obj.hypothetical_questions = questions
+                        filtered = self.question_filter.filter(
+                            chunk_obj.content,
+                            questions
+                        ) if self.question_filter else questions
+                        if not filtered:
+                            filtered = self.question_filter.fallback(chunk_obj.content) if self.question_filter else questions
+                        chunk_obj.hypothetical_questions = filtered
 
                     if progress_tracker:
                         progress_tracker.increment_stage("generation", len(batch))
