@@ -259,23 +259,26 @@ class EvaluationPipeline:
     
     def __init__(self, config: Dict):
         self.config = config
-        
+        device_pref = config.get('device', 'auto')
+        if not device_pref or device_pref == 'auto':
+            device_pref = 'cuda' if torch.cuda.is_available() else 'cpu'
+        self.device = device_pref
+
         # 初始化评估器
         self.semantic_evaluator = SemanticEvaluator(
             embedding_model=config.get('embedding_model', 'BAAI/bge-m3'),
-            device=config.get('device', 'auto')
+            device=self.device
         )
         
         # 初始化LLM评估器（如果可用）
         model_name = config.get('llm_model')
         token = config.get('HUGGING_FACE_TOKEN')
-        device = config.get('device', 'auto')
         
         self.llm_evaluator = None
         if model_name:
             try:
                 self.llm_evaluator = LLMEvaluator(
-                    model_name=model_name, device=device, token=token
+                    model_name=model_name, device=self.device, token=token
                 )
                 logger.success("Evaluation Pipeline with LLM evaluator initialized")
             except Exception as e:
@@ -633,7 +636,7 @@ def build_default_rag_config() -> Dict[str, Any]:
         'knowledge_graph_db_path': str(cfg.KNOWLEDGE_GRAPH_DB_PATH),
         'enable_tiered_generation': cfg.ENABLE_TIERED_GENERATION,
         'enable_feedback_collection': cfg.ENABLE_FEEDBACK_COLLECTION,
-        'feedback_db_path': str(cfg.FEEDBACK_DB_PATH),
+        'feedback_db_path': cfg.FEEDBACK_DB_PATH,
         'api_models': cfg.API_MODELS,
         'enable_query_intelligence': cfg.ENABLE_QUERY_INTELLIGENCE,
         'enable_multi_representation': cfg.ENABLE_MULTI_REPRESENTATION,
