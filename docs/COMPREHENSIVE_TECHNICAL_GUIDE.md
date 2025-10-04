@@ -1698,12 +1698,12 @@ alerting:
 
 - **评测数据目录**：所有测试集、报告统一存储于 `<STORAGE_ROOT>/evaluation/`
 - **数据集脚本**：
-  - `python data/evaluation/convert_hotpotqa.py` → HotpotQA 1K 英文多跳问答
-  - `python data/evaluation/convert_crag.py` → CRAG 1K 中文检索问答
+  - `python convert_hotpotqa.py` → HotpotQA 1K 英文多跳问答
+  - `python convert_dureader.py` → DuReader-Robust 1K 中文检索问答
 - **评测命令**：
   ```bash
   python -m src.evaluation.evaluation_pipeline --dataset-preset hotpotqa --use-ragas
-  python -m src.evaluation.evaluation_pipeline --dataset-preset crag --mode enhanced
+  python -m src.evaluation.evaluation_pipeline --dataset-preset dureader --mode enhanced
   ```
 - **输出结果**：`evaluation_<timestamp>.json`，包含平均指标、单案例详情、可选 RAGAS 分数
 - **CI 建议**：模型/索引更新后自动运行评测，确保指标回归

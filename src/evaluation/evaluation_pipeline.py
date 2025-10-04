@@ -664,9 +664,9 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--dataset-preset",
         type=str,
-        choices=['golden', 'hotpotqa', 'crag'],
+        choices=['golden', 'hotpotqa', 'dureader'],
         default=None,
-        help="Quick-select dataset preset located in data/evaluation/*."
+        help="Quick-select dataset preset located in evaluation output directory."
     )
     parser.add_argument(
         "--output",
@@ -711,10 +711,11 @@ async def run_evaluation_cli() -> None:
     }
 
     if args.dataset_preset:
+        preset_base = default_config.EVALUATION_OUTPUT_DIR
         preset_map = {
             'golden': default_config.GOLDEN_TEST_SET_PATH,
-            'hotpotqa': Path('data/evaluation/hotpotqa_testcases.json'),
-            'crag': Path('data/evaluation/crag_testcases.json')
+            'hotpotqa': preset_base / 'hotpotqa_testcases.json',
+            'dureader': preset_base / 'dureader_testcases.json'
         }
         dataset_path = preset_map[args.dataset_preset]
     else:
