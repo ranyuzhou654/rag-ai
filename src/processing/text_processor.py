@@ -228,6 +228,7 @@ class EnhancedTextProcessor:
             model_name=config.get('embedding_model', 'BAAI/bge-m3'),
             device=config.get('device', 'auto')
         )
+        self.storage_mode = config.get('storage_content_mode', 'full')
         splitter_type = config.get('splitter_type', 'hierarchical')
         if splitter_type == 'semantic':
             self.splitter = SemanticGraphSplitter(
@@ -296,11 +297,21 @@ class EnhancedTextProcessor:
             # Standard processing - convert to dict format
             chunks_dict = []
             for chunk in vectorized_chunks:
+                primary_content = chunk.content
+                if self.storage_mode == 'summary' and chunk.metadata.get('summary'):
+                    primary_content = chunk.metadata['summary']
+                elif self.storage_mode == 'title_abstract':
+                    title = chunk.metadata.get('title')
+                    abstract = chunk.metadata.get('abstract') or chunk.content[:200]
+                    primary_content = f"{title}\n\n{abstract}" if title else abstract
+                metadata = chunk.metadata.copy()
+                if self.storage_mode != 'full':
+                    metadata.setdefault('content_preview', chunk.content[:200])
                 chunk_dict = {
-                    'content': chunk.content,
+                    'content': primary_content,
                     'chunk_id': chunk.chunk_id,
                     'source_id': chunk.source_id,
-                    'metadata': chunk.metadata,
+                    'metadata': metadata,
                     'embedding': chunk.embedding.tolist() if chunk.embedding is not None else None,
                     'semantic_type': 'content',
                     'representation_type': 'original'

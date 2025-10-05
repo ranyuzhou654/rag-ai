@@ -38,17 +38,20 @@ class Config:
     EMBEDDING_MODEL = os.getenv("EMBEDDING_MODEL", "BAAI/bge-m3")
     LLM_MODEL = os.getenv("LLM_MODEL", "Qwen/Qwen2-7B-Instruct")
     DEVICE = os.getenv("DEVICE", "auto")
+    INFERENCE_BACKEND = os.getenv("INFERENCE_BACKEND", "local")  # local | api | vllm
     
     # 向量数据库
     QDRANT_HOST = os.getenv("QDRANT_HOST", "localhost")
     QDRANT_PORT = int(os.getenv("QDRANT_PORT", 6333))
     COLLECTION_NAME = os.getenv("COLLECTION_NAME", "ai_papers")
+    VECTOR_DB_BACKEND = os.getenv("VECTOR_DB_BACKEND", "qdrant")  # qdrant | milvus
     
     # 处理参数
     CHUNK_SIZE = int(os.getenv("CHUNK_SIZE", 512))
     CHUNK_OVERLAP = int(os.getenv("CHUNK_OVERLAP", 50))
     MAX_TOKENS = int(os.getenv("MAX_TOKENS", 4096))
     TEMPERATURE = float(os.getenv("TEMPERATURE", 0.1))
+    STORAGE_CONTENT_MODE = os.getenv("STORAGE_CONTENT_MODE", "full")  # full | summary | title_abstract
     
     # 数据源
     ARXIV_BASE_URL = os.getenv("ARXIV_BASE_URL")
@@ -101,4 +104,3 @@ class Config:
 
 # 创建一个全局可用的配置实例
 config = Config()
-

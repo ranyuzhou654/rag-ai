@@ -643,7 +643,10 @@ def build_default_rag_config() -> Dict[str, Any]:
         'enable_agentic_rag': cfg.ENABLE_AGENTIC_RAG,
         'enable_contextual_compression': cfg.ENABLE_CONTEXTUAL_COMPRESSION,
         'default_rag_mode': cfg.DEFAULT_RAG_MODE,
-        'enable_hybrid_search': True
+        'enable_hybrid_search': True,
+        'vector_db_backend': cfg.VECTOR_DB_BACKEND,
+        'inference_backend': cfg.INFERENCE_BACKEND,
+        'storage_content_mode': cfg.STORAGE_CONTENT_MODE
     }
 
 

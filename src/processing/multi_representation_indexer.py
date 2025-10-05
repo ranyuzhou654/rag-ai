@@ -344,6 +344,7 @@ class MultiRepresentationIndexer:
     
     def __init__(self, config: Dict):
         self.config = config
+        self.storage_mode = config.get('storage_content_mode', 'full')
 
         # Initialize embedding model
         self.embedder = ModelRegistry.get_sentence_transformer(
@@ -387,6 +388,19 @@ class MultiRepresentationIndexer:
             except Exception as exc:
                 logger.error(f"Failed to initialize summary compressor: {exc}")
                 self.summary_compressor = None
+
+    def _select_primary_content(self, chunk: MultiRepresentationChunk) -> str:
+        if self.storage_mode == 'summary':
+            return chunk.summary or chunk.content
+        if self.storage_mode == 'title_abstract':
+            title = chunk.metadata.get('title') if isinstance(chunk.metadata, dict) else None
+            abstract = chunk.summary or chunk.metadata.get('abstract') if isinstance(chunk.metadata, dict) else None
+            if not abstract:
+                abstract = chunk.content[:200]
+            if title:
+                return f"{title}\n\n{abstract}"
+            return abstract
+        return chunk.content
     
     async def create_multi_representations(
         self,
@@ -423,7 +437,7 @@ class MultiRepresentationIndexer:
                     content=chunk['content'],
                     chunk_id=chunk['chunk_id'],
                     source_id=chunk['source_id'],
-                    metadata=chunk.get('metadata', {}),
+                    metadata=dict(chunk.get('metadata', {})),
                     content_embedding=chunk.get('embedding')
                 )
                 for chunk in chunks
@@ -554,19 +568,27 @@ class MultiRepresentationIndexer:
         
         for chunk in chunks:
             # 1. Original content entry
+            primary_content = self._select_primary_content(chunk)
+            metadata = chunk.metadata.copy() if isinstance(chunk.metadata, dict) else dict(chunk.metadata)
+            if self.storage_mode != 'full':
+                metadata.setdefault('content_preview', chunk.content[:200])
+                metadata.setdefault('storage_mode', self.storage_mode)
+
             content_entry = {
                 'chunk_id': chunk.chunk_id,
                 'source_id': chunk.source_id,
-                'content': chunk.content,
+                'content': primary_content,
                 'embedding': chunk.content_embedding.tolist() if chunk.content_embedding is not None else None,
                 'semantic_type': 'content',
                 'representation_type': 'original',
-                'metadata': chunk.metadata
+                'metadata': metadata
             }
             index_entries.append(content_entry)
             
             # 2. Summary entry
             if chunk.summary and chunk.summary_embedding is not None:
+                summary_metadata = metadata.copy()
+                summary_metadata.update({'is_summary': True})
                 summary_entry = {
                     'chunk_id': f"{chunk.chunk_id}_summary",
                     'source_id': chunk.source_id,
@@ -575,7 +597,7 @@ class MultiRepresentationIndexer:
                     'semantic_type': 'summary',
                     'representation_type': 'summary',
                     'original_chunk_id': chunk.chunk_id,
-                    'metadata': {**chunk.metadata, 'is_summary': True}
+                    'metadata': summary_metadata
                 }
                 index_entries.append(summary_entry)
             
@@ -583,6 +605,8 @@ class MultiRepresentationIndexer:
             for j, (question, q_embedding) in enumerate(
                 zip(chunk.hypothetical_questions, chunk.questions_embeddings)
             ):
+                question_metadata = metadata.copy()
+                question_metadata.update({'is_question': True, 'question_index': j})
                 question_entry = {
                     'chunk_id': f"{chunk.chunk_id}_q{j}",
                     'source_id': chunk.source_id,
@@ -592,7 +616,7 @@ class MultiRepresentationIndexer:
                     'representation_type': 'hypothetical_question',
                     'original_chunk_id': chunk.chunk_id,
                     'original_content': chunk.content,
-                    'metadata': {**chunk.metadata, 'is_question': True, 'question_index': j}
+                    'metadata': question_metadata
                 }
                 index_entries.append(question_entry)
         
