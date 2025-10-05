@@ -45,6 +45,14 @@ class Config:
     QDRANT_PORT = int(os.getenv("QDRANT_PORT", 6333))
     COLLECTION_NAME = os.getenv("COLLECTION_NAME", "ai_papers")
     VECTOR_DB_BACKEND = os.getenv("VECTOR_DB_BACKEND", "qdrant")  # qdrant | milvus
+    MILVUS_URI = os.getenv("MILVUS_URI")
+    MILVUS_HOST = os.getenv("MILVUS_HOST", "localhost")
+    MILVUS_PORT = os.getenv("MILVUS_PORT", "19530")
+    MILVUS_USERNAME = os.getenv("MILVUS_USERNAME", "")
+    MILVUS_PASSWORD = os.getenv("MILVUS_PASSWORD", "")
+    MILVUS_DB_NAME = os.getenv("MILVUS_DB_NAME", "default")
+    MILVUS_COLLECTION = os.getenv("MILVUS_COLLECTION", "ai_papers")
+    MILVUS_DIM = int(os.getenv("MILVUS_DIM", 1024))
     
     # 处理参数
     CHUNK_SIZE = int(os.getenv("CHUNK_SIZE", 512))

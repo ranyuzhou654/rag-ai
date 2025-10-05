@@ -20,6 +20,16 @@ from rank_bm25 import BM25Okapi
 from collections import defaultdict
 import hashlib
 
+try:
+    from pymilvus import (
+        connections as milvus_connections,
+        FieldSchema, CollectionSchema, DataType, Collection,
+        utility as milvus_utility
+    )
+    MILVUS_AVAILABLE = True
+except ImportError:  # pragma: no cover
+    MILVUS_AVAILABLE = False
+
 class QdrantVectorDB:
     """
     Qdrant向量数据库管理器 - 企业级版本
@@ -377,7 +387,7 @@ class QdrantVectorDB:
             )
         
         return models.Filter(must=conditions) if conditions else None
-    
+
     def advanced_academic_search(
         self, 
         query_vector: np.ndarray, 
@@ -565,8 +575,311 @@ class QdrantVectorDB:
             
         except Exception as e:
             logger.error(f"❌ 高级学术搜索失败: {e}")
+        return []
+
+
+class MilvusVectorDB:
+    """Milvus 向量数据库管理器"""
+
+    def __init__(
+        self,
+        uri: Optional[str],
+        host: str,
+        port: Union[str, int],
+        user: str,
+        password: str,
+        db_name: str,
+        collection_name: str,
+        vector_size: int,
+        enable_hybrid_search: bool = True,
+        bm25_weight: float = 0.3,
+        vector_weight: float = 0.7
+    ):
+        if not MILVUS_AVAILABLE:
+            raise ImportError("pymilvus not installed. Please install it to use Milvus backend.")
+
+        self.collection_name = collection_name
+        self.vector_size = vector_size
+        self.enable_hybrid_search = enable_hybrid_search
+        self.bm25_weight = bm25_weight
+        self.vector_weight = vector_weight
+
+        self.document_texts: List[str] = []
+        self.doc_id_mapping: Dict[str, int] = {}
+        self.bm25_index: Optional[BM25Okapi] = None
+
+        connect_kwargs: Dict[str, Any] = {}
+        if uri:
+            connect_kwargs['uri'] = uri
+        else:
+            connect_kwargs['host'] = host
+            connect_kwargs['port'] = str(port)
+        if user:
+            connect_kwargs['user'] = user
+        if password:
+            connect_kwargs['password'] = password
+        if db_name:
+            connect_kwargs['db_name'] = db_name
+
+        logger.info(f"Connecting to Milvus: {connect_kwargs}")
+        milvus_connections.connect(alias="default", **connect_kwargs)
+
+        if not milvus_utility.has_collection(collection_name):
+            logger.info(f"Creating Milvus collection: {collection_name}")
+            self._create_collection()
+        self.collection = Collection(collection_name)
+
+        if not self.collection.has_index():
+            self._create_index()
+        self.collection.load()
+
+    def _create_collection(self):
+        fields = [
+            FieldSchema(name="pk", dtype=DataType.INT64, is_primary=True, auto_id=True),
+            FieldSchema(name="chunk_id", dtype=DataType.VARCHAR, max_length=256),
+            FieldSchema(name="source_id", dtype=DataType.VARCHAR, max_length=256),
+            FieldSchema(name="content", dtype=DataType.VARCHAR, max_length=8192),
+            FieldSchema(name="metadata", dtype=DataType.VARCHAR, max_length=8192),
+            FieldSchema(name="semantic_type", dtype=DataType.VARCHAR, max_length=64),
+            FieldSchema(name="representation_type", dtype=DataType.VARCHAR, max_length=64),
+            FieldSchema(name="vector", dtype=DataType.FLOAT_VECTOR, dim=self.vector_size)
+        ]
+        schema = CollectionSchema(fields, description="RAG-AI Milvus collection", enable_dynamic_field=False)
+        Collection(self.collection_name, schema, consistency_level="Session")
+
+    def _create_index(self):
+        index_params = {
+            "index_type": "HNSW",
+            "metric_type": "IP",
+            "params": {"M": 32, "efConstruction": 200}
+        }
+        self.collection.create_index(field_name="vector", index_params=index_params)
+
+    def add_chunks(self, chunks: List[Dict], batch_size: int = 100) -> bool:
+        if not chunks:
+            return True
+
+        total_inserted = 0
+        for i in range(0, len(chunks), batch_size):
+            batch = chunks[i:i + batch_size]
+            rows = {
+                "chunk_id": [],
+                "source_id": [],
+                "content": [],
+                "metadata": [],
+                "semantic_type": [],
+                "representation_type": [],
+                "vector": []
+            }
+
+            for item in batch:
+                embedding = item.get('embedding')
+                content = item.get('content')
+                if embedding is None or content is None:
+                    continue
+
+                metadata_json = json.dumps(item.get('metadata', {}), ensure_ascii=False)
+                rows["chunk_id"].append(str(item.get('chunk_id', ''))[:256])
+                rows["source_id"].append(str(item.get('source_id', ''))[:256])
+                rows["content"].append(str(content)[:8192])
+                rows["metadata"].append(metadata_json[:8192])
+                rows["semantic_type"].append(str(item.get('semantic_type', 'content'))[:64])
+                rows["representation_type"].append(str(item.get('representation_type', 'original'))[:64])
+                rows["vector"].append(list(embedding))
+
+            if not rows["vector"]:
+                continue
+
+            try:
+                self.collection.insert([
+                    rows["chunk_id"],
+                    rows["source_id"],
+                    rows["content"],
+                    rows["metadata"],
+                    rows["semantic_type"],
+                    rows["representation_type"],
+                    rows["vector"]
+                ])
+                total_inserted += len(rows["vector"])
+                if self.enable_hybrid_search:
+                    self.update_bm25_index(batch)
+            except Exception as exc:
+                logger.error(f"Milvus insert failed: {exc}")
+        self.collection.flush()
+        logger.info(f"Milvus inserted {total_inserted}/{len(chunks)} vectors")
+        return total_inserted > 0
+
+    def hybrid_search(
+        self,
+        query_vector: np.ndarray,
+        query_text: str,
+        top_k: int = 10,
+        vector_weight: float = 0.7,
+        text_weight: float = 0.3,
+        filter_condition: Optional[Dict] = None
+    ) -> List[Dict]:
+        try:
+            query_tokens = set(self._tokenize_for_search(query_text))
+            search_params = {"metric_type": "IP", "params": {"ef": 128}}
+            results = self.collection.search(
+                data=[query_vector.tolist()],
+                anns_field="vector",
+                param=search_params,
+                limit=top_k * 2,
+                output_fields=["chunk_id", "source_id", "content", "metadata", "semantic_type", "representation_type"]
+            )
+
+            hits = results[0] if results else []
+            ranked: List[Dict] = []
+            for hit in hits:
+                entity = hit.entity
+                metadata_raw = entity.get("metadata") or "{}"
+                try:
+                    metadata = json.loads(metadata_raw)
+                except json.JSONDecodeError:
+                    metadata = {"raw": metadata_raw}
+                content = entity.get("content") or ""
+                content_tokens = set(self._tokenize_for_search(content))
+                text_score = len(query_tokens & content_tokens) / max(len(query_tokens), 1) if query_tokens else 0.0
+                vector_score = float(hit.score)
+                hybrid_score = vector_weight * vector_score + text_weight * text_score
+                ranked.append({
+                    'chunk_id': entity.get("chunk_id"),
+                    'source_id': entity.get("source_id"),
+                    'content': content,
+                    'semantic_type': entity.get("semantic_type", 'content'),
+                    'metadata': metadata,
+                    'scores': {
+                        'vector_score': vector_score,
+                        'text_score': text_score,
+                        'hybrid_score': hybrid_score
+                    }
+                })
+
+            ranked.sort(key=lambda x: x['scores']['hybrid_score'], reverse=True)
+            return ranked[:top_k]
+        except Exception as exc:
+            logger.error(f"Milvus search failed: {exc}")
             return []
-    
+
+    def advanced_academic_search(
+        self,
+        query_vector: np.ndarray,
+        query_text: str,
+        authors: Optional[List[str]] = None,
+        year_range: Optional[Tuple[int, int]] = None,
+        sources: Optional[List[str]] = None,
+        categories: Optional[List[str]] = None,
+        has_full_text: Optional[bool] = None,
+        language: Optional[str] = None,
+        top_k: int = 10
+    ) -> List[Dict]:
+        candidates = self.hybrid_search(
+            query_vector=query_vector,
+            query_text=query_text,
+            top_k=max(20, top_k * 2),
+            vector_weight=self.vector_weight,
+            text_weight=self.bm25_weight
+        )
+
+        if not candidates:
+            return []
+
+        def _filter(meta: Dict) -> bool:
+            if authors:
+                doc_authors = meta.get('authors', [])
+                if doc_authors and not any(author in doc_authors for author in authors):
+                    return False
+            if year_range:
+                year = meta.get('year') or meta.get('publication_year')
+                try:
+                    if year is not None and not (year_range[0] <= int(year) <= year_range[1]):
+                        return False
+                except ValueError:
+                    pass
+            if sources:
+                src = meta.get('source')
+                if src and src not in sources:
+                    return False
+            if categories:
+                doc_cats = meta.get('categories', [])
+                if isinstance(doc_cats, str):
+                    doc_cats = [doc_cats]
+                if doc_cats and not any(cat in doc_cats for cat in categories):
+                    return False
+            if has_full_text is not None:
+                if bool(meta.get('has_full_text')) != has_full_text:
+                    return False
+            if language and meta.get('language') not in (None, language):
+                return False
+            return True
+
+        filtered = [res for res in candidates if _filter(res.get('metadata', {}))]
+        return (filtered or candidates)[:top_k]
+
+    def get_collection_stats(self) -> Dict[str, Any]:
+        try:
+            total = self.collection.num_entities
+        except Exception:
+            total = len(self.document_texts)
+        return {
+            'backend': 'milvus',
+            'collection_name': self.collection_name,
+            'total_vectors': total,
+            'vector_size': self.vector_size,
+            'bm25_docs': len(self.document_texts),
+            'hybrid_enabled': self.enable_hybrid_search
+        }
+
+    def update_bm25_index(self, chunks: List[Dict]) -> None:
+        if not self.enable_hybrid_search:
+            return
+
+        updated = False
+        for chunk in chunks:
+            chunk_id = chunk.get('chunk_id')
+            content = chunk.get('content')
+            if not chunk_id or not content:
+                continue
+
+            if chunk_id in self.doc_id_mapping:
+                index = self.doc_id_mapping[chunk_id]
+                self.document_texts[index] = content
+            else:
+                self.doc_id_mapping[chunk_id] = len(self.document_texts)
+                self.document_texts.append(content)
+            updated = True
+
+        if not updated:
+            return
+
+        tokenized_corpus = []
+        for text in self.document_texts:
+            tokens = self._tokenize_for_search(text)
+            if not tokens:
+                tokens = text.split()
+            tokenized_corpus.append(tokens)
+
+        if any(tokenized_corpus):
+            self.bm25_index = BM25Okapi(tokenized_corpus)
+
+    def _tokenize_for_search(self, text: str) -> List[str]:
+        import re
+        tokens = re.findall(r'\b[a-z0-9]{2,}\b', text.lower())
+        chinese_segments = re.findall(r'[\u4e00-\u9fa5]+', text)
+        for segment in chinese_segments:
+            tokens.extend(self._generate_chinese_tokens(segment))
+        return list({token for token in tokens if token})
+
+    def _generate_chinese_tokens(self, segment: str) -> List[str]:
+        if not segment:
+            return []
+        tokens = set()
+        length = len(segment)
+        for size in (1, 2, 3):
+            for i in range(length - size + 1):
+                tokens.add(segment[i:i + size])
+        return list(tokens)
     def get_trending_papers(self, days: int = 7, limit: int = 20) -> List[Dict]:
         """获取近期热门论文"""
         try:
@@ -723,16 +1036,33 @@ class VectorDatabaseManager:
     """向量数据库管理器 - 企业级版本"""
     
     def __init__(self, config: Dict):
-        self.db = QdrantVectorDB(
-            host=config.get('qdrant_host', 'localhost'),
-            port=config.get('qdrant_port', 6333),
-            collection_name=config.get('collection_name', 'ai_papers'),
-            vector_size=config.get('vector_size', 1024),
-            timeout=config.get('qdrant_timeout', 120),
-            enable_hybrid_search=config.get('enable_hybrid_search', True),
-            bm25_weight=config.get('bm25_weight', 0.3),
-            vector_weight=config.get('vector_weight', 0.7)
-        )
+        backend = config.get('vector_db_backend', 'qdrant')
+        vector_size = config.get('vector_size', 1024)
+        if backend == 'milvus':
+            self.db = MilvusVectorDB(
+                uri=config.get('milvus_uri'),
+                host=config.get('milvus_host', 'localhost'),
+                port=config.get('milvus_port', '19530'),
+                user=config.get('milvus_username', ''),
+                password=config.get('milvus_password', ''),
+                db_name=config.get('milvus_db_name', 'default'),
+                collection_name=config.get('milvus_collection', 'ai_papers'),
+                vector_size=config.get('milvus_dim', vector_size),
+                enable_hybrid_search=config.get('enable_hybrid_search', True),
+                bm25_weight=config.get('bm25_weight', 0.3),
+                vector_weight=config.get('vector_weight', 0.7)
+            )
+        else:
+            self.db = QdrantVectorDB(
+                host=config.get('qdrant_host', 'localhost'),
+                port=config.get('qdrant_port', 6333),
+                collection_name=config.get('collection_name', 'ai_papers'),
+                vector_size=vector_size,
+                timeout=config.get('qdrant_timeout', 120),
+                enable_hybrid_search=config.get('enable_hybrid_search', True),
+                bm25_weight=config.get('bm25_weight', 0.3),
+                vector_weight=config.get('vector_weight', 0.7)
+            )
     
     def build_knowledge_base(self, processed_chunks_path: Path, chunks: Optional[List[Dict]] = None) -> bool:
         """

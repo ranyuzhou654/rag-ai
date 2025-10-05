@@ -645,6 +645,14 @@ def build_default_rag_config() -> Dict[str, Any]:
         'default_rag_mode': cfg.DEFAULT_RAG_MODE,
         'enable_hybrid_search': True,
         'vector_db_backend': cfg.VECTOR_DB_BACKEND,
+        'milvus_uri': cfg.MILVUS_URI,
+        'milvus_host': cfg.MILVUS_HOST,
+        'milvus_port': cfg.MILVUS_PORT,
+        'milvus_username': cfg.MILVUS_USERNAME,
+        'milvus_password': cfg.MILVUS_PASSWORD,
+        'milvus_db_name': cfg.MILVUS_DB_NAME,
+        'milvus_collection': cfg.MILVUS_COLLECTION,
+        'milvus_dim': cfg.MILVUS_DIM,
         'inference_backend': cfg.INFERENCE_BACKEND,
         'storage_content_mode': cfg.STORAGE_CONTENT_MODE
     }

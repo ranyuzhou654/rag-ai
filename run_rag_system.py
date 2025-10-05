@@ -92,6 +92,8 @@ class RAGSystemRunner:
             'streamlit',
             'pymupdf4llm'
         ]
+        if config.VECTOR_DB_BACKEND.lower() == 'milvus':
+            required_packages.append('pymilvus')
         
         for package in required_packages:
             try:
@@ -101,20 +103,41 @@ class RAGSystemRunner:
                 logger.error(f"❌ {package} 未安装")
                 success = False
         
-        # 3. 检查Qdrant服务
-        try:
-            from qdrant_client import QdrantClient
-            client = QdrantClient(host="localhost", port=6333)
-            collections = client.get_collections()
-            logger.info("✅ Qdrant服务连接正常")
-        except Exception as e:
-            logger.warning(f"⚠️ Qdrant服务连接失败: {e}")
-            logger.info("提示: 请确保Docker中的Qdrant服务正在运行")
-            success = False
+        # 3. 检查向量数据库服务
+        if config.VECTOR_DB_BACKEND.lower() == 'milvus':
+            try:
+                from pymilvus import connections as milvus_connections
+                connect_kwargs = {}
+                if config.MILVUS_URI:
+                    connect_kwargs['uri'] = config.MILVUS_URI
+                else:
+                    connect_kwargs['host'] = config.MILVUS_HOST
+                    connect_kwargs['port'] = config.MILVUS_PORT
+                if config.MILVUS_USERNAME:
+                    connect_kwargs['user'] = config.MILVUS_USERNAME
+                if config.MILVUS_PASSWORD:
+                    connect_kwargs['password'] = config.MILVUS_PASSWORD
+                milvus_connections.connect(alias="health_check", **connect_kwargs)
+                logger.info("✅ Milvus服务连接正常")
+                milvus_connections.disconnect("health_check")
+            except Exception as e:
+                logger.warning(f"⚠️ Milvus服务连接失败: {e}")
+                logger.info("提示: 请确认 Milvus 服务已启动并配置正确")
+                success = False
+        else:
+            try:
+                from qdrant_client import QdrantClient
+                client = QdrantClient(host=config.QDRANT_HOST, port=config.QDRANT_PORT)
+                client.get_collections()
+                logger.info("✅ Qdrant服务连接正常")
+            except Exception as e:
+                logger.warning(f"⚠️ Qdrant服务连接失败: {e}")
+                logger.info("提示: 请确保Docker中的Qdrant服务正在运行")
+                success = False
         
         return success
 
-    async def collect_data(self, max_papers: int = 50, days_back: int = 7) -> bool:
+    async def collect_data(self, args) -> bool:
         """数据收集步骤"""
         logger.info("📥 开始数据收集...")
         
@@ -122,10 +145,23 @@ class RAGSystemRunner:
             from src.data_ingestion.multi_source_collector import MultiSourceCollector
             
             # 初始化收集器
-            collector = MultiSourceCollector(self.data_dir / "raw")
-            
-            # 收集数据
-            all_data = await collector.collect_all(days_back=days_back)
+            metadata_only = args.metadata_only if args.metadata_only is not None else (config.STORAGE_CONTENT_MODE != 'full')
+            collector = MultiSourceCollector(self.data_dir / "raw", metadata_only=metadata_only)
+
+            if args.years and args.years > 0:
+                logger.info(f"📚 Collecting historical papers for the past {args.years} years")
+                all_data = await collector.collect_arxiv_history(
+                    years=args.years,
+                    categories=args.arxiv_categories,
+                    batch_days=args.arxiv_batch_days,
+                    max_results_per_query=args.max_results_per_interval,
+                    max_total=args.max_papers
+                )
+            else:
+                all_data = await collector.collect_recent(
+                    days_back=args.days_back,
+                    max_papers=args.max_papers
+                )
             
             if not all_data:
                 logger.error("❌ 没有收集到任何数据")
@@ -165,7 +201,8 @@ class RAGSystemRunner:
                 'device': config.DEVICE,
                 'enable_multi_representation': config.ENABLE_MULTI_REPRESENTATION,
                 'llm_model': config.LLM_MODEL,
-                'HUGGING_FACE_TOKEN': config.HUGGING_FACE_TOKEN
+                'HUGGING_FACE_TOKEN': config.HUGGING_FACE_TOKEN,
+                'storage_content_mode': config.STORAGE_CONTENT_MODE
             }
 
             processor = TextProcessor(processor_config)
@@ -210,12 +247,31 @@ class RAGSystemRunner:
                 vector_size = 1024  # 合理的默认值
 
             db_config = {
-                'qdrant_host': config.QDRANT_HOST,
-                'qdrant_port': config.QDRANT_PORT,
+                'vector_db_backend': config.VECTOR_DB_BACKEND,
                 'collection_name': config.COLLECTION_NAME,
                 'vector_size': vector_size,
-                'qdrant_timeout': getattr(config, 'QDRANT_TIMEOUT', 120)
+                'enable_hybrid_search': True,
+                'bm25_weight': 0.3,
+                'vector_weight': 0.7
             }
+
+            if config.VECTOR_DB_BACKEND.lower() == 'milvus':
+                db_config.update({
+                    'milvus_uri': config.MILVUS_URI,
+                    'milvus_host': config.MILVUS_HOST,
+                    'milvus_port': config.MILVUS_PORT,
+                    'milvus_username': config.MILVUS_USERNAME,
+                    'milvus_password': config.MILVUS_PASSWORD,
+                    'milvus_db_name': config.MILVUS_DB_NAME,
+                    'milvus_collection': config.MILVUS_COLLECTION,
+                    'milvus_dim': config.MILVUS_DIM
+                })
+            else:
+                db_config.update({
+                    'qdrant_host': config.QDRANT_HOST,
+                    'qdrant_port': config.QDRANT_PORT,
+                    'qdrant_timeout': getattr(config, 'QDRANT_TIMEOUT', 120)
+                })
 
             db_manager = VectorDatabaseManager(db_config)
 
@@ -226,8 +282,10 @@ class RAGSystemRunner:
                 # 显示统计信息
                 stats = db_manager.db.get_collection_stats()
                 logger.info(f"✅ 知识库构建成功!")
-                logger.info(f"   总向量数: {stats.get('total_points', 0)}")
-                logger.info(f"   向量维度: {stats.get('vector_size', 0)}")
+                total_vectors = stats.get('total_points') or stats.get('total_vectors', 0)
+                vector_dim = stats.get('vector_size', 0)
+                logger.info(f"   总向量数: {total_vectors}")
+                logger.info(f"   向量维度: {vector_dim}")
                 return True
             else:
                 logger.error("❌ 知识库构建失败")
@@ -249,10 +307,18 @@ class RAGSystemRunner:
                 'embedding_model': config.EMBEDDING_MODEL,
                 'llm_model': config.LLM_MODEL,
                 'device': config.DEVICE,
+                'collection_name': config.COLLECTION_NAME,
+                'HUGGING_FACE_TOKEN': config.HUGGING_FACE_TOKEN,
+                'vector_db_backend': config.VECTOR_DB_BACKEND,
                 'qdrant_host': config.QDRANT_HOST,
                 'qdrant_port': config.QDRANT_PORT,
-                'collection_name': config.COLLECTION_NAME,
-                'HUGGING_FACE_TOKEN': config.HUGGING_FACE_TOKEN
+                'milvus_uri': config.MILVUS_URI,
+                'milvus_host': config.MILVUS_HOST,
+                'milvus_port': config.MILVUS_PORT,
+                'milvus_username': config.MILVUS_USERNAME,
+                'milvus_password': config.MILVUS_PASSWORD,
+                'milvus_db_name': config.MILVUS_DB_NAME,
+                'milvus_collection': config.MILVUS_COLLECTION
             }
 
             rag_system = RAGSystem(rag_settings)
@@ -376,7 +442,7 @@ class RAGSystemRunner:
         
         # 2. 数据收集（可选）
         if not args.skip_collect:
-            if not await self.collect_data(args.max_papers, args.days_back):
+            if not await self.collect_data(args):
                 logger.error("❌ 数据收集失败")
                 return False
         
@@ -425,8 +491,20 @@ def main():
     
     # 基本参数
     parser.add_argument('--port', type=int, default=8501, help='前端端口号')
-    parser.add_argument('--max-papers', type=int, default=50, help='最大论文收集数量')
+    parser.add_argument('--max-papers', type=int, default=200, help='最大论文收集数量 (历史模式时作为上限)')
     parser.add_argument('--days-back', type=int, default=7, help='收集最近几天的数据')
+    parser.add_argument('--years', type=int, default=None, help='收集最近多少年（仅针对ArXiv，优先级高于days-back）')
+    parser.add_argument('--arxiv-categories', type=str,
+                        default='cat:cs.AI OR cat:cs.CL OR cat:cs.LG',
+                        help='ArXiv 检索类别表达式')
+    parser.add_argument('--arxiv-batch-days', type=int, default=30,
+                        help='历史模式下每个时间窗口的天数')
+    parser.add_argument('--max-results-per-interval', type=int, default=200,
+                        help='历史模式下每个窗口的最大返回数（ArXiv API max 200）')
+    parser.add_argument('--metadata-only', dest='metadata_only', action='store_const', const=True, default=None,
+                        help='仅存储元数据（摘要/标题），跳过全文下载')
+    parser.add_argument('--full-text', dest='metadata_only', action='store_const', const=False,
+                        help='强制下载全文PDF并提取（无论存储模式为何）')
     
     # 流程控制
     parser.add_argument('--skip-check', action='store_true', help='跳过环境检查')

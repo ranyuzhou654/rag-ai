@@ -8,6 +8,7 @@ jieba
 
 # Vector Database and Storage
 qdrant-client>=1.7.0
+pymilvus>=2.3.0  # optional: required when using Milvus backend
 
 # Document Processing
 pymupdf4llm>=0.0.5

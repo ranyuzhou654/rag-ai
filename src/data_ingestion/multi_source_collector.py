@@ -112,12 +112,63 @@ class MultiSourceCollector:
 
         return all_docs
 
+    async def collect_recent(self, days_back: int = 30, max_papers: Optional[int] = None) -> List[Document]:
+        """收集最近一段时间的数据，可设置最大数量"""
+        docs = await self.collect_all(days_back=days_back)
+        if max_papers and len(docs) > max_papers:
+            docs = docs[:max_papers]
+        return docs
+
+    async def collect_arxiv_history(
+        self,
+        years: int = 10,
+        categories: str = "cat:cs.AI OR cat:cs.CL OR cat:cs.LG",
+        batch_days: int = 30,
+        max_results_per_query: int = 200,
+        max_total: Optional[int] = None
+    ) -> List[Document]:
+        """按时间窗口收集近几年 ArXiv 论文"""
+        end_date = datetime.utcnow()
+        start_boundary = end_date - timedelta(days=365 * years)
+        logger.info(
+            f"🚀 Collecting ArXiv papers from {start_boundary.date()} to {end_date.date()}"
+        )
+
+        collected: List[Document] = []
+
+        async with aiohttp.ClientSession() as session:
+            window_end = end_date
+            while window_end > start_boundary:
+                window_start = max(start_boundary, window_end - timedelta(days=batch_days))
+                docs = await self._fetch_arxiv_window(
+                    session=session,
+                    base_query=categories,
+                    window_start=window_start,
+                    window_end=window_end,
+                    max_results=max_results_per_query
+                )
+                if docs:
+                    collected.extend(docs)
+                    logger.info(
+                        f"📚 Collected {len(docs)} papers between {window_start.date()} and {window_end.date()}"
+                    )
+                window_end = window_start
+                if max_total and len(collected) >= max_total:
+                    collected = collected[:max_total]
+                    break
+                await asyncio.sleep(1)
+
+        self._save_raw_data(collected)
+        logger.success(f"✅ Historical collection complete: {len(collected)} documents")
+        return collected
+
     def _save_raw_data(self, docs: List[Document]):
         """保存原始数据到JSON文件"""
         output_data = [doc.__dict__ for doc in docs]
         with open(self.raw_data_path, "w", encoding="utf-8") as f:
             json.dump(output_data, f, ensure_ascii=False, indent=2, default=str)
         logger.info(f"💾 Raw data saved to {self.raw_data_path}")
+        self.processed_ids.update(doc.id for doc in docs)
 
     # --- ArXiv Collector ---
     async def fetch_arxiv_papers(self, session: aiohttp.ClientSession, query: str = "cat:cs.AI OR cat:cs.CL OR cat:cs.LG", days_back: int = 7) -> List[Document]:
@@ -135,7 +186,8 @@ class MultiSourceCollector:
                     return []
 
                 xml_content = await response.text()
-                parsed_papers = self._parse_arxiv_response(xml_content, days_back)
+                cutoff = datetime.utcnow() - timedelta(days=days_back)
+                parsed_papers = self._parse_arxiv_response(xml_content, start_date=cutoff)
 
                 # 下载并解析PDF
                 processed_papers = await self.download_and_extract_pdfs(parsed_papers, session)
@@ -144,14 +196,61 @@ class MultiSourceCollector:
         except Exception as e:
             logger.error(f"Error fetching ArXiv papers: {e}")
             return []
+
+    async def _fetch_arxiv_window(
+        self,
+        session: aiohttp.ClientSession,
+        base_query: str,
+        window_start: datetime,
+        window_end: datetime,
+        max_results: int
+    ) -> List[Document]:
+        query = (
+            f"({base_query}) AND submittedDate:"
+            f"[{window_start.strftime('%Y%m%d%H%M%S')} TO {window_end.strftime('%Y%m%d%H%M%S')}]"
+        )
+        base_url = "http://export.arxiv.org/api/query"
+        start = 0
+        collected: List[Document] = []
+
+        while True:
+            params = {
+                'search_query': query,
+                'start': start,
+                'max_results': max_results,
+                'sortBy': 'submittedDate',
+                'sortOrder': 'descending'
+            }
+            async with session.get(base_url, params=params) as response:
+                if response.status != 200:
+                    logger.warning(f"ArXiv request failed ({response.status}) for {window_start.date()}-{window_end.date()}")
+                    break
+                xml_content = await response.text()
+                parsed = self._parse_arxiv_response(
+                    xml_content,
+                    start_date=window_start,
+                    end_date=window_end
+                )
+                if not parsed:
+                    break
+                docs = await self.download_and_extract_pdfs(parsed, session)
+                collected.extend(docs)
+                if len(parsed) < max_results:
+                    break
+            start += max_results
+            await asyncio.sleep(1)
+        return collected
     
-    def _parse_arxiv_response(self, xml_content: str, days_back: int) -> List[Dict]:
-        """解析ArXiv API的XML响应"""
+    def _parse_arxiv_response(
+        self,
+        xml_content: str,
+        start_date: Optional[datetime] = None,
+        end_date: Optional[datetime] = None
+    ) -> List[Dict]:
+        """解析ArXiv API的XML响应，可按时间范围过滤"""
         papers = []
         root = ET.fromstring(xml_content)
         ns = {'atom': 'http://www.w3.org/2005/Atom'}
-        cutoff_date = datetime.now() - timedelta(days=days_back)
-        
         for entry in root.findall('atom:entry', ns):
             arxiv_id = entry.find('atom:id', ns).text.split('/')[-1]
             if f"arxiv_{arxiv_id}" in self.processed_ids:
@@ -159,23 +258,60 @@ class MultiSourceCollector:
 
             published_str = entry.find('atom:published', ns).text
             published = datetime.fromisoformat(published_str.replace('Z', '+00:00'))
-            if published.replace(tzinfo=None) < cutoff_date:
+            naive_published = published.replace(tzinfo=None)
+            if start_date and naive_published < start_date:
                 continue
-            
+            if end_date and naive_published > end_date:
+                continue
+
             pdf_url = next((link.get('href') for link in entry.findall('atom:link', ns) if link.get('type') == 'application/pdf'), f"https://arxiv.org/pdf/{arxiv_id}.pdf")
-            
+            authors = [author.find('atom:name', ns).text for author in entry.findall('atom:author', ns)]
+            categories = [cat.get('term') for cat in entry.findall('atom:category', ns)]
+
             papers.append({
                 'id': f"arxiv_{arxiv_id}",
                 'title': entry.find('atom:title', ns).text.strip(),
                 'abstract': entry.find('atom:summary', ns).text.strip(),
                 'url': entry.find('atom:id', ns).text,
                 'pdf_url': pdf_url,
-                'published': published
+                'published': published,
+                'authors': authors,
+                'categories': categories
             })
         return papers
 
     async def download_and_extract_pdfs(self, papers: List[Dict], session: aiohttp.ClientSession) -> List[Document]:
         """并发下载PDF并提取文本"""
+        if self.metadata_only:
+            docs: List[Document] = []
+            for paper in papers:
+                metadata = {
+                    'source': 'arxiv',
+                    'authors': paper.get('authors', []),
+                    'categories': paper.get('categories', []),
+                    'published': paper.get('published').isoformat() if paper.get('published') else None,
+                    'pdf_url': paper.get('pdf_url'),
+                    'url': paper.get('url')
+                }
+                abstract = paper.get('abstract', '')
+                doc = Document(
+                    id=paper['id'],
+                    source='arxiv',
+                    title=paper.get('title', ''),
+                    content=abstract,
+                    url=paper.get('url'),
+                    published_date=paper.get('published'),
+                    metadata=metadata,
+                    abstract=abstract,
+                    authors=paper.get('authors', []),
+                    doi=None,
+                    arxiv_id=paper['id'].replace('arxiv_', ''),
+                    pdf_url=paper.get('pdf_url'),
+                    is_full_text=False
+                )
+                docs.append(doc)
+            return docs
+
         semaphore = asyncio.Semaphore(5)
         tasks = [self._process_single_pdf(paper, semaphore, session) for paper in papers]
         results = await asyncio.gather(*tasks)
@@ -201,10 +337,27 @@ class MultiSourceCollector:
                 if not extracted_text:
                     extracted_text = paper_meta['abstract'] # Fallback to abstract
 
+                metadata = {
+                    'source': 'arxiv',
+                    'abstract': paper_meta.get('abstract'),
+                    'authors': paper_meta.get('authors', []),
+                    'categories': paper_meta.get('categories', []),
+                    'pdf_url': paper_meta.get('pdf_url')
+                }
+
                 return Document(
-                    id=paper_meta['id'], source="arxiv", title=paper_meta['title'],
-                    content=extracted_text, url=paper_meta['url'],
-                    published_date=paper_meta['published'], metadata={'abstract': paper_meta['abstract']}
+                    id=paper_meta['id'],
+                    source="arxiv",
+                    title=paper_meta['title'],
+                    content=extracted_text,
+                    url=paper_meta['url'],
+                    published_date=paper_meta['published'],
+                    metadata=metadata,
+                    abstract=paper_meta.get('abstract'),
+                    authors=paper_meta.get('authors', []),
+                    arxiv_id=paper_meta['id'].replace('arxiv_', ''),
+                    pdf_url=paper_meta.get('pdf_url'),
+                    is_full_text=True
                 )
             except Exception as e:
                 logger.error(f"Error processing PDF {paper_meta['id']}: {e}")
@@ -364,4 +517,3 @@ class MultiSourceCollector:
         with open(self.metadata_path, "w", encoding="utf-8") as f:
             json.dump(metadata_index, f, ensure_ascii=False, indent=2)
         logger.info(f"💾 Metadata index updated with {len(new_docs)} new entries")
-
