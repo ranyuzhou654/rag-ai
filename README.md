@@ -205,6 +205,10 @@ QDRANT_HOST=localhost
 QDRANT_PORT=6333
 COLLECTION_NAME=ai_papers
 
+# Semantic Scholar enrichment (optional)
+ENABLE_SEMANTIC_SCHOLAR=true
+SEMANTIC_SCHOLAR_API_KEY=your_semantic_scholar_api_key
+
 # Cache Configuration  
 REDIS_HOST=localhost
 REDIS_PORT=6379
@@ -273,6 +277,8 @@ optimization_result = await storage_optimizer.optimize_storage(
 - **Daily incremental updates**: Efficient data pipeline
 - **Multi-source async collection**: ArXiv, HuggingFace, blogs
 - **Citation-ready metadata**: Academic compliance built-in
+- **Semantic Scholar enrichment**: Optional TLDRs and concept tags for richer retrieval
+- **Smoke test**: After configuring network access run `python scripts/smoke_test_sources.py` to verify OpenAlex and Semantic Scholar connectivity
 
 ```python
 # Example: On-demand full-text retrieval

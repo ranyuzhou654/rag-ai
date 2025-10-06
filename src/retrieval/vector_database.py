@@ -1,5 +1,5 @@
 # src/retrieval/vector_database.py
-from typing import List, Dict, Optional, Tuple, Any, Union
+from typing import List, Dict, Optional, Tuple, Any, Union, Set
 import numpy as np
 from dataclasses import asdict
 from qdrant_client import QdrantClient
@@ -87,6 +87,85 @@ class QdrantVectorDB:
         except Exception as e:
             logger.error(f"连接Qdrant失败: {e}")
             raise
+
+    def _search_metadata_value(self, data: Any, key: str) -> Optional[Any]:
+        """Recursively search nested metadata for a key."""
+        if isinstance(data, dict):
+            if key in data and data[key]:
+                return data[key]
+            for value in data.values():
+                found = self._search_metadata_value(value, key)
+                if found:
+                    return found
+        elif isinstance(data, list):
+            for item in data:
+                found = self._search_metadata_value(item, key)
+                if found:
+                    return found
+        return None
+
+    def _collect_metadata_terms(self, metadata: Dict[str, Any]) -> List[str]:
+        """Collect concept/keyword terms from nested metadata."""
+        terms: List[str] = []
+        candidates = []
+        for key in ("concepts", "keywords", "tags"):
+            value = self._search_metadata_value(metadata, key)
+            if value:
+                candidates.append(value)
+
+        for value in candidates:
+            if isinstance(value, list):
+                for item in value:
+                    term = None
+                    if isinstance(item, str):
+                        term = item
+                    elif isinstance(item, dict):
+                        term = item.get("display_name") or item.get("name") or item.get("term")
+                    if term:
+                        terms.append(term)
+            elif isinstance(value, str):
+                terms.append(value)
+
+        # Preserve order while removing duplicates
+        seen = set()
+        unique_terms = []
+        for term in terms:
+            normalized = term.strip()
+            if normalized and normalized.lower() not in seen:
+                seen.add(normalized.lower())
+                unique_terms.append(normalized)
+        return unique_terms[:12]
+
+    def _prepare_metadata_enrichment(self, chunk: Dict[str, Any]) -> Tuple[str, List[str], Optional[str], str]:
+        """Build enriched metadata summary and search text for a chunk."""
+        metadata = chunk.get('metadata', {}) or {}
+        title = self._search_metadata_value(metadata, 'title')
+        abstract = self._search_metadata_value(metadata, 'abstract')
+        tldr = self._search_metadata_value(metadata, 'tldr')
+        if isinstance(tldr, dict):  # Defensive guard when TLDR is dict
+            tldr = tldr.get('text')
+        terms = self._collect_metadata_terms(metadata)
+
+        summary_parts: List[str] = []
+        if isinstance(tldr, str) and tldr.strip():
+            summary_parts.append(f"TLDR: {tldr.strip()}")
+        if isinstance(abstract, str) and abstract.strip():
+            summary_parts.append(abstract.strip())
+        if terms:
+            summary_parts.append("Concepts: " + ", ".join(terms))
+        metadata_summary = "\n".join(summary_parts)
+
+        content = chunk.get('content', '') or ''
+        search_segments: List[str] = []
+        if isinstance(title, str) and title.strip():
+            search_segments.append(title.strip())
+        if metadata_summary:
+            search_segments.append(metadata_summary)
+        if content:
+            search_segments.append(content)
+
+        search_text = "\n".join(segment for segment in search_segments if segment)
+        return metadata_summary, terms, tldr if isinstance(tldr, str) else None, search_text or content
     
     def _ensure_collection_exists(self):
         """确保集合存在，不存在则创建"""
@@ -169,6 +248,27 @@ class QdrantVectorDB:
                     logger.warning(f"跳过无embedding的chunk: {chunk.get('chunk_id', 'unknown')}")
                     continue
                 
+                metadata_summary, concept_terms, tldr_text, search_text = self._prepare_metadata_enrichment(chunk)
+                metadata = chunk.get('metadata', {}) or {}
+                if isinstance(metadata, dict):
+                    payload_metadata = metadata.copy()
+                else:
+                    payload_metadata = {'raw_metadata': metadata}
+
+                if metadata_summary and 'metadata_summary' not in payload_metadata:
+                    payload_metadata['metadata_summary'] = metadata_summary
+                if concept_terms:
+                    existing_terms = payload_metadata.get('concepts')
+                    if isinstance(existing_terms, list):
+                        merged = existing_terms + [t for t in concept_terms if t not in existing_terms]
+                        payload_metadata['concepts'] = merged[:12]
+                    else:
+                        payload_metadata['concepts'] = concept_terms
+                if tldr_text and not payload_metadata.get('tldr'):
+                    payload_metadata['tldr'] = tldr_text
+
+                text_tokens = self._tokenize_for_search(search_text)
+
                 # 准备向量点
                 try:
                     point = PointStruct(
@@ -179,9 +279,12 @@ class QdrantVectorDB:
                             'source_id': chunk['source_id'],
                             'content': chunk['content'],
                             'semantic_type': chunk.get('semantic_type', 'content'),
-                            'metadata': chunk.get('metadata', {}),
+                            'metadata': payload_metadata,
+                            'metadata_summary': metadata_summary,
+                            'tldr': tldr_text,
+                            'concepts': concept_terms,
                             # 添加全文检索字段
-                            'text_tokens': self._tokenize_for_search(chunk['content'])
+                            'text_tokens': text_tokens
                         }
                     )
                     points.append(point)
@@ -256,16 +359,16 @@ class QdrantVectorDB:
         updated = False
         for chunk in chunks:
             chunk_id = chunk.get('chunk_id')
-            content = chunk.get('content')
-            if not chunk_id or not content:
+            _, _, _, search_text = self._prepare_metadata_enrichment(chunk)
+            if not chunk_id or not search_text:
                 continue
 
             if chunk_id in self.doc_id_mapping:
                 index = self.doc_id_mapping[chunk_id]
-                self.document_texts[index] = content
+                self.document_texts[index] = search_text
             else:
                 self.doc_id_mapping[chunk_id] = len(self.document_texts)
-                self.document_texts.append(content)
+                self.document_texts.append(search_text)
             updated = True
 
         if not updated:
@@ -333,21 +436,58 @@ class QdrantVectorDB:
                 
                 # 计算文本匹配得分
                 content_tokens = set(payload.get('text_tokens', []))
-                text_score = len(query_tokens.intersection(content_tokens)) / max(len(query_tokens), 1)
+                text_overlap = len(query_tokens.intersection(content_tokens)) / max(len(query_tokens), 1)
+
+                concept_overlap = 0.0
+                concepts = payload.get('concepts') or []
+                if concepts:
+                    concept_tokens: Set[str] = set()
+                    for concept in concepts:
+                        concept_tokens.update(self._tokenize_for_search(concept))
+                    if concept_tokens:
+                        concept_overlap = len(query_tokens.intersection(concept_tokens)) / max(len(query_tokens), 1)
+
+                text_score = min(1.0, text_overlap + 0.2 * concept_overlap)
                 
                 # 混合得分
                 vector_score = hit.score
-                hybrid_score = vector_weight * vector_score + text_weight * text_score
+                hybrid_score = (
+                    vector_weight * vector_score +
+                    text_weight * text_score
+                )
                 
+                metadata = payload.get('metadata', {}) or {}
+                if isinstance(metadata, dict):
+                    metadata_copy = metadata.copy()
+                else:
+                    metadata_copy = {'raw_metadata': metadata}
+
+                metadata_summary = payload.get('metadata_summary')
+                if metadata_summary and 'metadata_summary' not in metadata_copy:
+                    metadata_copy['metadata_summary'] = metadata_summary
+                if payload.get('tldr') and not metadata_copy.get('tldr'):
+                    metadata_copy['tldr'] = payload['tldr']
+                if concepts:
+                    existing_concepts = metadata_copy.get('concepts')
+                    if isinstance(existing_concepts, list):
+                        merged = existing_concepts + [c for c in concepts if c not in existing_concepts]
+                        metadata_copy['concepts'] = merged
+                    else:
+                        metadata_copy['concepts'] = concepts
+
                 result = {
                     'chunk_id': payload['chunk_id'],
                     'source_id': payload['source_id'],
                     'content': payload['content'],
                     'semantic_type': payload.get('semantic_type', 'content'),
-                    'metadata': payload.get('metadata', {}),
+                    'tldr': payload.get('tldr'),
+                    'concepts': concepts,
+                    'metadata': metadata_copy,
+                    'metadata_summary': metadata_summary,
                     'scores': {
                         'vector_score': float(vector_score),
                         'text_score': text_score,
+                        'concept_score': concept_overlap,
                         'hybrid_score': hybrid_score
                     }
                 }
@@ -529,11 +669,35 @@ class QdrantVectorDB:
                         self.vector_weight * vector_score + 
                         self.bm25_weight * normalized_bm25
                     )
+
+                    payload = point.payload
+                    concepts = payload.get('concepts') or []
+                    metadata = payload.get('metadata', {}) or {}
+                    if isinstance(metadata, dict):
+                        metadata_copy = metadata.copy()
+                    else:
+                        metadata_copy = {'raw_metadata': metadata}
+
+                    metadata_summary = payload.get('metadata_summary')
+                    if metadata_summary and 'metadata_summary' not in metadata_copy:
+                        metadata_copy['metadata_summary'] = metadata_summary
+                    if payload.get('tldr') and not metadata_copy.get('tldr'):
+                        metadata_copy['tldr'] = payload['tldr']
+                    if concepts:
+                        existing_concepts = metadata_copy.get('concepts')
+                        if isinstance(existing_concepts, list):
+                            merged = existing_concepts + [c for c in concepts if c not in existing_concepts]
+                            metadata_copy['concepts'] = merged
+                        else:
+                            metadata_copy['concepts'] = concepts
                     
                     result = {
                         'id': point.id,
                         'content': point.payload.get('content', ''),
-                        'metadata': point.payload.get('metadata', {}),
+                        'tldr': payload.get('tldr'),
+                        'concepts': concepts,
+                        'metadata': metadata_copy,
+                        'metadata_summary': metadata_summary,
                         'scores': {
                             'vector_score': float(vector_score),
                             'bm25_score': float(normalized_bm25),
@@ -549,10 +713,35 @@ class QdrantVectorDB:
                 # 纯语义搜索结果
                 results = []
                 for point in search_result[:top_k]:
+                    payload = point.payload
+                    concepts = payload.get('concepts') or []
+                    metadata = payload.get('metadata', {}) or {}
+                    if isinstance(metadata, dict):
+                        metadata_copy = metadata.copy()
+                    else:
+                        metadata_copy = {'raw_metadata': metadata}
+
+                    metadata_summary = payload.get('metadata_summary')
+                    concepts = payload.get('concepts') or []
+                    if metadata_summary and 'metadata_summary' not in metadata_copy:
+                        metadata_copy['metadata_summary'] = metadata_summary
+                    if payload.get('tldr') and not metadata_copy.get('tldr'):
+                        metadata_copy['tldr'] = payload['tldr']
+                    if concepts:
+                        existing_concepts = metadata_copy.get('concepts')
+                        if isinstance(existing_concepts, list):
+                            merged = existing_concepts + [c for c in concepts if c not in existing_concepts]
+                            metadata_copy['concepts'] = merged
+                        else:
+                            metadata_copy['concepts'] = concepts
+
                     result = {
                         'id': point.id,
                         'content': point.payload.get('content', ''),
-                        'metadata': point.payload.get('metadata', {}),
+                        'tldr': payload.get('tldr'),
+                        'concepts': concepts,
+                        'metadata': metadata_copy,
+                        'metadata_summary': metadata_summary,
                         'scores': {
                             'vector_score': float(point.score),
                             'hybrid_score': float(point.score)

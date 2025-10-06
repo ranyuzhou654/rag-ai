@@ -196,6 +196,10 @@ QDRANT_HOST=localhost
 QDRANT_PORT=6333
 COLLECTION_NAME=ai_papers
 
+# Semantic Scholar 增强（可选）
+ENABLE_SEMANTIC_SCHOLAR=true
+SEMANTIC_SCHOLAR_API_KEY=your_semantic_scholar_api_key
+
 # 缓存配置  
 REDIS_HOST=localhost
 REDIS_PORT=6379
@@ -264,6 +268,8 @@ optimization_result = await storage_optimizer.optimize_storage(
 - **每日增量更新**: 高效数据管道
 - **多源异步收集**: ArXiv、HuggingFace、博客
 - **引用就绪元数据**: 内置学术合规性
+- **Semantic Scholar增强**: 可选TLDR与概念标签，提升检索表现
+- **集成验证**: 配置网络后运行 `python scripts/smoke_test_sources.py` 验证 OpenAlex 与 Semantic Scholar 连接
 
 ```python
 # 示例: 按需全文检索

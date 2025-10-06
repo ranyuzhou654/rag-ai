@@ -1,5 +1,5 @@
 # src/generation/rag_generator.py
-from typing import List, Dict, Optional, Tuple
+from typing import List, Dict, Optional, Tuple, Any
 import asyncio
 from collections import OrderedDict
 from dataclasses import dataclass
@@ -149,7 +149,79 @@ class EnhancedContextOptimizer:
         else:
             self.enhanced_mode = False
             logger.info("Basic Context Optimizer initialized")
-    
+
+    def _metadata_value(self, metadata: Any, key: str) -> Optional[Any]:
+        if isinstance(metadata, dict):
+            if key in metadata and metadata[key]:
+                return metadata[key]
+            nested = metadata.get('metadata')
+            if isinstance(nested, dict):
+                return self._metadata_value(nested, key)
+        return None
+
+    def _collect_terms(self, metadata: Any) -> List[str]:
+        terms: List[str] = []
+        if isinstance(metadata, dict):
+            raw_terms = metadata.get('concepts') or metadata.get('keywords') or []
+            if isinstance(raw_terms, list):
+                for item in raw_terms:
+                    if isinstance(item, str):
+                        terms.append(item)
+                    elif isinstance(item, dict):
+                        name = item.get('display_name') or item.get('name') or item.get('term')
+                        if name:
+                            terms.append(name)
+            elif isinstance(raw_terms, str):
+                terms.append(raw_terms)
+            nested = metadata.get('metadata')
+            if isinstance(nested, dict):
+                terms.extend(self._collect_terms(nested))
+
+        seen = set()
+        unique_terms = []
+        for term in terms:
+            normalized = term.strip()
+            if normalized and normalized.lower() not in seen:
+                seen.add(normalized.lower())
+                unique_terms.append(normalized)
+        return unique_terms[:10]
+
+    def _build_enriched_snippet(self, chunk: Dict) -> str:
+        metadata = chunk.get('metadata', {}) or {}
+        parts: List[str] = []
+
+        title = self._metadata_value(metadata, 'title')
+        if isinstance(title, str) and title.strip():
+            parts.append(title.strip())
+
+        summary = chunk.get('metadata_summary')
+        if not summary:
+            summary = self._metadata_value(metadata, 'metadata_summary')
+        if not summary:
+            tldr = chunk.get('tldr') or self._metadata_value(metadata, 'tldr')
+            if isinstance(tldr, str) and tldr.strip():
+                summary = f"TLDR: {tldr.strip()}"
+        if isinstance(summary, str) and summary.strip():
+            parts.append(summary.strip())
+
+        abstract = self._metadata_value(metadata, 'abstract')
+        if isinstance(abstract, str) and abstract.strip() and abstract not in parts:
+            parts.append(abstract.strip())
+
+        content = chunk.get('content', '')
+        if content:
+            parts.append(content)
+
+        concepts = self._collect_terms(metadata)
+        if concepts:
+            parts.append("Concepts: " + ", ".join(concepts))
+
+        return "\n".join(section for section in parts if section)
+
+    def _format_context_block(self, index: int, chunk: Dict, enriched_text: str) -> str:
+        header = f"[Source {index}]"
+        return f"{header}\n{enriched_text}" if enriched_text else f"{header}\n{chunk.get('content', '')}"
+
     def optimize_context(
         self, 
         retrieved_chunks: List[Dict], 
@@ -171,12 +243,19 @@ class EnhancedContextOptimizer:
                 chunks=retrieved_chunks,
                 top_k=min(top_k * 2, len(retrieved_chunks))  # Get more candidates
             )
+            enriched_snippets = [self._build_enriched_snippet(chunk) for chunk in optimized_chunks]
             
             # Step 2: Context compression if enabled
             if use_compression:
+                prepared_chunks = []
+                for chunk, enriched in zip(optimized_chunks[:top_k], enriched_snippets[:top_k]):
+                    chunk_copy = chunk.copy()
+                    chunk_copy['content'] = enriched or chunk.get('content', '')
+                    prepared_chunks.append(chunk_copy)
+
                 compressed_context = self.contextual_compressor.compress_context(
                     query=query,
-                    chunks=optimized_chunks[:top_k],
+                    chunks=prepared_chunks,
                     max_context_length=self.max_context_length,
                     compression_method=compression_method
                 )
@@ -187,7 +266,7 @@ class EnhancedContextOptimizer:
                 # Just use reranked chunks without compression
                 final_chunks = optimized_chunks[:top_k]
                 context_text = "\n\n".join([
-                    f"[Source {i+1}]\n{chunk['content']}" 
+                    self._format_context_block(i + 1, chunk, enriched_snippets[i])
                     for i, chunk in enumerate(final_chunks)
                 ])
                 return context_text[:self.max_context_length], final_chunks
@@ -196,7 +275,7 @@ class EnhancedContextOptimizer:
         else:
             final_chunks = retrieved_chunks[:top_k]
             context_text = "\n\n".join([
-                f"[Source {i+1}]\n{chunk['content']}" 
+                self._format_context_block(i + 1, chunk, self._build_enriched_snippet(chunk))
                 for i, chunk in enumerate(final_chunks)
             ])
             return context_text[:self.max_context_length], final_chunks
@@ -478,4 +557,3 @@ class EnhancedRAGSystem:
 
 # Keep compatibility with old RAGSystem name
 RAGSystem = EnhancedRAGSystem
-

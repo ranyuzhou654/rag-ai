@@ -64,6 +64,8 @@ class Config:
     # 数据源
     ARXIV_BASE_URL = os.getenv("ARXIV_BASE_URL")
     MAX_PAPERS_PER_FETCH = int(os.getenv("MAX_PAPERS_PER_FETCH", 50))
+    ENABLE_SEMANTIC_SCHOLAR = bool(os.getenv("ENABLE_SEMANTIC_SCHOLAR", "true").lower() == "true")
+    SEMANTIC_SCHOLAR_API_KEY = os.getenv("SEMANTIC_SCHOLAR_API_KEY")
     
     # 增强功能开关
     ENABLE_QUERY_INTELLIGENCE = bool(os.getenv("ENABLE_QUERY_INTELLIGENCE", "true").lower() == "true")

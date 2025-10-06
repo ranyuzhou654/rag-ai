@@ -385,6 +385,19 @@ class SmartReranker:
         # 2. Keyword matching
         query_words = set(re.findall(r'\w+', query.lower()))
         content_words = set(re.findall(r'\w+', content.lower()))
+        metadata = chunk.get('metadata', {})
+        metadata_summary = chunk.get('metadata_summary')
+        if not metadata_summary and isinstance(metadata, dict):
+            metadata_summary = metadata.get('metadata_summary')
+        if isinstance(metadata_summary, str):
+            content_words.update(re.findall(r'\w+', metadata_summary.lower()))
+        concepts = chunk.get('concepts')
+        if not concepts and isinstance(metadata, dict):
+            concepts = metadata.get('concepts')
+        if isinstance(concepts, list):
+            for concept in concepts:
+                if isinstance(concept, str):
+                    content_words.update(re.findall(r'\w+', concept.lower()))
         if query_words:
             keyword_overlap = len(query_words.intersection(content_words)) / len(query_words)
         else:

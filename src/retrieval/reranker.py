@@ -32,6 +32,73 @@ class AdvancedReranker:
         self.bi_encoder = SentenceTransformer(bi_encoder_model, device=self.device)
         logger.success("Reranker models loaded.")
 
+    def _extract_metadata_field(self, metadata, key: str):
+        if isinstance(metadata, dict):
+            if key in metadata and metadata[key]:
+                return metadata[key]
+            nested = metadata.get('metadata')
+            if isinstance(nested, dict):
+                value = self._extract_metadata_field(nested, key)
+                if value:
+                    return value
+        return None
+
+    def _collect_metadata_terms(self, metadata) -> List[str]:
+        terms: List[str] = []
+        if isinstance(metadata, dict):
+            raw_terms = metadata.get('concepts') or metadata.get('keywords') or []
+            if isinstance(raw_terms, list):
+                for item in raw_terms:
+                    if isinstance(item, str):
+                        terms.append(item)
+                    elif isinstance(item, dict):
+                        name = item.get('display_name') or item.get('name') or item.get('term')
+                        if name:
+                            terms.append(name)
+            elif isinstance(raw_terms, str):
+                terms.append(raw_terms)
+            nested = metadata.get('metadata')
+            if isinstance(nested, dict):
+                terms.extend(self._collect_metadata_terms(nested))
+
+        seen = set()
+        unique_terms = []
+        for term in terms:
+            normalized = term.strip()
+            if normalized and normalized.lower() not in seen:
+                seen.add(normalized.lower())
+                unique_terms.append(normalized)
+        return unique_terms[:10]
+
+    def _build_chunk_text(self, chunk: Dict) -> str:
+        metadata = chunk.get('metadata', {}) or {}
+        parts: List[str] = []
+
+        title = self._extract_metadata_field(metadata, 'title')
+        if isinstance(title, str) and title.strip():
+            parts.append(title.strip())
+
+        summary = chunk.get('metadata_summary')
+        if not summary:
+            summary = self._extract_metadata_field(metadata, 'metadata_summary')
+        if not summary:
+            tldr = chunk.get('tldr') or self._extract_metadata_field(metadata, 'tldr')
+            if isinstance(tldr, str) and tldr.strip():
+                summary = f"TLDR: {tldr.strip()}"
+        if summary:
+            parts.append(summary if isinstance(summary, str) else str(summary))
+
+        content = chunk.get('content', '')
+        if content:
+            parts.append(content)
+
+        concepts = self._collect_metadata_terms(metadata)
+        if concepts:
+            parts.append("Concepts: " + ", ".join(concepts))
+
+        combined = "\n".join(p for p in parts if p)
+        return combined or content
+
     def _get_device(self, device: str) -> str:
         if device == "auto":
             return "cuda" if torch.cuda.is_available() else "cpu"
@@ -51,7 +118,7 @@ class AdvancedReranker:
             return []
 
         # 1. Cross-Encoder 精排
-        pairs = [[query, chunk['content']] for chunk in retrieved_chunks]
+        pairs = [[query, self._build_chunk_text(chunk)] for chunk in retrieved_chunks]
         scores = self.cross_encoder.predict(pairs, show_progress_bar=False)
 
         for chunk, score in zip(retrieved_chunks, scores):
@@ -78,7 +145,7 @@ class AdvancedReranker:
         if not docs:
             return []
             
-        doc_contents = [doc['content'] for doc in docs]
+        doc_contents = [self._build_chunk_text(doc) for doc in docs]
         doc_embeddings = self.bi_encoder.encode(doc_contents, convert_to_tensor=True)
         query_embedding = self.bi_encoder.encode(query, convert_to_tensor=True)
 
